@@ -16,8 +16,11 @@ add_subdirectory(3rd_party/glfw)
 set(APP_NAME main)
 
 add_executable(${APP_NAME} main.cpp 3rd_party/vk-bootstrap/VkBootstrap.cpp)
-target_include_directories(${APP_NAME} PRIVATE 3rd_party/vk-bootstrap ${Vulkan_INCLUDE_DIR})
-target_link_libraries(${APP_NAME} PRIVATE glfw)
+target_include_directories(${APP_NAME} PRIVATE
+        3rd_party/vk-bootstrap
+        3rd_party/vma
+        ${Vulkan_INCLUDE_DIR})
+target_link_libraries(${APP_NAME} PRIVATE glfw Vulkan::Vulkan ${CMAKE_DL_LIBS})
 
 # shader compile
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")
