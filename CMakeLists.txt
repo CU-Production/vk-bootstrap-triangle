@@ -20,7 +20,7 @@ target_include_directories(${APP_NAME} PRIVATE
         3rd_party/vk-bootstrap
         3rd_party/vma
         ${Vulkan_INCLUDE_DIR})
-target_link_libraries(${APP_NAME} PRIVATE glfw Vulkan::Vulkan ${CMAKE_DL_LIBS})
+target_link_libraries(${APP_NAME} PRIVATE glfw ${CMAKE_DL_LIBS})
 
 # shader compile
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")
