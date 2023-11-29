@@ -13,6 +13,10 @@ set(GLFW_INSTALL OFF CACHE INTERNAL "glfw install")
 set(GLFW_VULKAN_STATIC OFF CACHE INTERNAL "glfw vulkan")
 add_subdirectory(3rd_party/glfw)
 
+# glm
+add_library(glm INTERFACE)
+target_include_directories(glm INTERFACE 3rd_party/glm)
+
 set(APP_NAME main)
 
 add_executable(${APP_NAME} main.cpp 3rd_party/vk-bootstrap/VkBootstrap.cpp)
@@ -20,7 +24,7 @@ target_include_directories(${APP_NAME} PRIVATE
         3rd_party/vk-bootstrap
         3rd_party/vma
         ${Vulkan_INCLUDE_DIR})
-target_link_libraries(${APP_NAME} PRIVATE glfw ${CMAKE_DL_LIBS})
+target_link_libraries(${APP_NAME} PRIVATE glfw glm ${CMAKE_DL_LIBS})
 
 # shader compile
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")

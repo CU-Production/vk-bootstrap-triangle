@@ -4,9 +4,11 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <array>
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 
 #define VMA_IMPLEMENTATION
 #define VMA_VULKAN_VERSION 1003000 // Vulkan 1.3
@@ -15,6 +17,17 @@
 #include <vk_mem_alloc.h>
 
 #include <VkBootstrap.h>
+
+struct Vertex {
+    glm::vec3 pos;
+    glm::vec3 color;
+};
+
+const std::vector<Vertex> vertices = {
+    {{ 0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+    {{ 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}
+};
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
@@ -49,6 +62,9 @@ struct RenderData {
     std::vector<VkFence> in_flight_fences;
     std::vector<VkFence> image_in_flight;
     size_t current_frame = 0;
+
+    VkBuffer vertex_buffer;
+    VmaAllocation vertex_buffer_allocation;
 };
 
 GLFWwindow* create_window_glfw(const char* window_name = "", bool resize = true) {
@@ -269,10 +285,27 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
 
     VkPipelineShaderStageCreateInfo shader_stages[] = { vert_stage_info, frag_stage_info };
 
+    VkVertexInputBindingDescription bindingDescription{};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(Vertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(Vertex, pos);
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(Vertex, color);
+
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_info.vertexBindingDescriptionCount = 0;
-    vertex_input_info.vertexAttributeDescriptionCount = 0;
+    vertex_input_info.vertexBindingDescriptionCount = 1;
+    vertex_input_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertex_input_info.pVertexBindingDescriptions = &bindingDescription;
+    vertex_input_info.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
     input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -459,6 +492,10 @@ int create_command_buffers(Init& init, RenderData& data) {
 
         init.disp.cmdBindPipeline(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
 
+        VkBuffer vertex_buffers[] = {data.vertex_buffer};
+        VkDeviceSize offsets[] = {0};
+        init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
+
         init.disp.cmdDraw(data.command_buffers[i], 3, 1, 0, 0);
 
         init.disp.cmdEndRenderPass(data.command_buffers[i]);
@@ -492,6 +529,31 @@ int create_sync_objects(Init& init, RenderData& data) {
             return -1; // failed to create synchronization objects for a frame
         }
     }
+    return 0;
+}
+
+int create_vertex_buffer(Init& init, RenderData& data) {
+    const uint32_t buffer_size = sizeof(vertices[0]) * vertices.size();
+    /* vertex buffer */
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = buffer_size;
+    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo alloc_info = {};
+    alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+    if (vmaCreateBuffer(init.allocator, &buffer_info, &alloc_info, &data.vertex_buffer, &data.vertex_buffer_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create vertex buffer\n";
+        return -1; // failed to create vertex buffer
+    }
+
+    void* mapped_data;
+    vmaMapMemory(init.allocator, data.vertex_buffer_allocation, &mapped_data);
+    memcpy(mapped_data, vertices.data(), buffer_info.size);
+    vmaUnmapMemory(init.allocator, data.vertex_buffer_allocation);
+
     return 0;
 }
 
@@ -580,6 +642,8 @@ int draw_frame(Init& init, RenderData& data) {
 }
 
 void cleanup(Init& init, RenderData& data) {
+    vmaDestroyBuffer(init.allocator, data.vertex_buffer, data.vertex_buffer_allocation);
+
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         init.disp.destroySemaphore(data.finished_semaphore[i], nullptr);
         init.disp.destroySemaphore(data.available_semaphores[i], nullptr);
@@ -619,6 +683,7 @@ int main() {
     if (0 != create_graphics_pipeline(init, render_data)) return -1;
     if (0 != create_framebuffers(init, render_data)) return -1;
     if (0 != create_command_pool(init, render_data)) return -1;
+    if (0 != create_vertex_buffer(init, render_data)) return -1;
     if (0 != create_command_buffers(init, render_data)) return -1;
     if (0 != create_sync_objects(init, render_data)) return -1;
 
