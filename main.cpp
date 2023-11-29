@@ -65,6 +65,8 @@ struct RenderData {
 
     VkBuffer vertex_buffer;
     VmaAllocation vertex_buffer_allocation;
+    VkBuffer staging_buffer;
+    VmaAllocation staging_buffer_allocation;
 };
 
 GLFWwindow* create_window_glfw(const char* window_name = "", bool resize = true) {
@@ -535,24 +537,72 @@ int create_sync_objects(Init& init, RenderData& data) {
 int create_vertex_buffer(Init& init, RenderData& data) {
     const uint32_t buffer_size = sizeof(vertices[0]) * vertices.size();
     /* vertex buffer */
-    VkBufferCreateInfo buffer_info{};
-    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = buffer_size;
-    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBufferCreateInfo vertex_buffer_info{};
+    vertex_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    vertex_buffer_info.size = buffer_size;
+    vertex_buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    vertex_buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VmaAllocationCreateInfo alloc_info = {};
-    alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    VmaAllocationCreateInfo vertex_buffer_alloc_info = {};
+    vertex_buffer_alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    if (vmaCreateBuffer(init.allocator, &buffer_info, &alloc_info, &data.vertex_buffer, &data.vertex_buffer_allocation, nullptr) != VK_SUCCESS) {
+    if (vmaCreateBuffer(init.allocator, &vertex_buffer_info, &vertex_buffer_alloc_info, &data.vertex_buffer, &data.vertex_buffer_allocation, nullptr) != VK_SUCCESS) {
         std::cout << "failed to create vertex buffer\n";
         return -1; // failed to create vertex buffer
     }
 
+    /* staging buffer for copy */
+    VkBufferCreateInfo staging_buffer_alloc_info{};
+    staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    staging_buffer_alloc_info.size = buffer_size;;
+    staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+    VmaAllocationCreateInfo staging_alloc_info{};
+    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &data.staging_buffer, &data.staging_buffer_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create vertex buffer\n";
+        return -1; // failed to create vertex buffer
+    }
+
+    /* copy data to staging buffer*/
     void* mapped_data;
-    vmaMapMemory(init.allocator, data.vertex_buffer_allocation, &mapped_data);
-    memcpy(mapped_data, vertices.data(), buffer_info.size);
-    vmaUnmapMemory(init.allocator, data.vertex_buffer_allocation);
+    vmaMapMemory(init.allocator, data.staging_buffer_allocation, &mapped_data);
+    memcpy(mapped_data, vertices.data(), vertex_buffer_info.size);
+    vmaUnmapMemory(init.allocator, data.staging_buffer_allocation);
+
+    VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+    cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdbuffer_alloc_info.commandPool = data.command_pool;
+    cmdbuffer_alloc_info.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+    VkBufferCopy copyRegion{};
+    copyRegion.srcOffset = 0; // Optional
+    copyRegion.dstOffset = 0; // Optional
+    copyRegion.size = buffer_size;
+    init.disp.cmdCopyBuffer(commandBuffer, data.staging_buffer, data.vertex_buffer, 1, &copyRegion);
+
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &commandBuffer;
+
+    init.disp.endCommandBuffer(commandBuffer);
+
+    init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+    init.disp.queueWaitIdle(data.graphics_queue);
+
+    init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
 
     return 0;
 }
@@ -642,6 +692,7 @@ int draw_frame(Init& init, RenderData& data) {
 }
 
 void cleanup(Init& init, RenderData& data) {
+    vmaDestroyBuffer(init.allocator, data.staging_buffer, data.staging_buffer_allocation);
     vmaDestroyBuffer(init.allocator, data.vertex_buffer, data.vertex_buffer_allocation);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
