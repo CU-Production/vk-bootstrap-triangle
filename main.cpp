@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <glm/gtx/transform.hpp>
 
 #define VMA_IMPLEMENTATION
 #define VMA_VULKAN_VERSION 1003000 // Vulkan 1.3
@@ -27,6 +28,11 @@ const std::vector<Vertex> vertices = {
     {{ 0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
     {{ 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
     {{-0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}
+};
+
+struct VertexShaderPushConstants {
+    glm::vec4 data;
+    glm::mat4 mvp_matrix;
 };
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
@@ -62,6 +68,7 @@ struct RenderData {
     std::vector<VkFence> in_flight_fences;
     std::vector<VkFence> image_in_flight;
     size_t current_frame = 0;
+    size_t number_of_frame = 0;
 
     VkBuffer vertex_buffer;
     VmaAllocation vertex_buffer_allocation;
@@ -339,7 +346,8 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    // rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -364,10 +372,16 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
     color_blending.blendConstants[2] = 0.0f;
     color_blending.blendConstants[3] = 0.0f;
 
+    VkPushConstantRange vs_push_constant_range;
+    vs_push_constant_range.offset = 0;
+    vs_push_constant_range.size = sizeof(VertexShaderPushConstants);
+    vs_push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipeline_layout_info.setLayoutCount = 0;
-    pipeline_layout_info.pushConstantRangeCount = 0;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &vs_push_constant_range;
 
     if (init.disp.createPipelineLayout(&pipeline_layout_info, nullptr, &data.pipeline_layout) != VK_SUCCESS) {
         std::cout << "failed to create pipeline layout\n";
@@ -435,6 +449,7 @@ int create_framebuffers(Init& init, RenderData& data) {
 int create_command_pool(Init& init, RenderData& data) {
     VkCommandPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_info.queueFamilyIndex = init.device.get_queue_index(vkb::QueueType::graphics).value();
 
     if (init.disp.createCommandPool(&pool_info, nullptr, &data.command_pool) != VK_SUCCESS) {
@@ -455,57 +470,6 @@ int create_command_buffers(Init& init, RenderData& data) {
 
     if (init.disp.allocateCommandBuffers(&allocInfo, data.command_buffers.data()) != VK_SUCCESS) {
         return -1; // failed to allocate command buffers;
-    }
-
-    for (size_t i = 0; i < data.command_buffers.size(); i++) {
-        VkCommandBufferBeginInfo begin_info = {};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        if (init.disp.beginCommandBuffer(data.command_buffers[i], &begin_info) != VK_SUCCESS) {
-            return -1; // failed to begin recording command buffer
-        }
-
-        VkRenderPassBeginInfo render_pass_info = {};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_info.renderPass = data.render_pass;
-        render_pass_info.framebuffer = data.framebuffers[i];
-        render_pass_info.renderArea.offset = { 0, 0 };
-        render_pass_info.renderArea.extent = init.swapchain.extent;
-        VkClearValue clearColor{ { { 0.0f, 0.0f, 0.0f, 1.0f } } };
-        render_pass_info.clearValueCount = 1;
-        render_pass_info.pClearValues = &clearColor;
-
-        VkViewport viewport = {};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = (float)init.swapchain.extent.width;
-        viewport.height = (float)init.swapchain.extent.height;
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor = {};
-        scissor.offset = { 0, 0 };
-        scissor.extent = init.swapchain.extent;
-
-        init.disp.cmdSetViewport(data.command_buffers[i], 0, 1, &viewport);
-        init.disp.cmdSetScissor(data.command_buffers[i], 0, 1, &scissor);
-
-        init.disp.cmdBeginRenderPass(data.command_buffers[i], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-
-        init.disp.cmdBindPipeline(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
-
-        VkBuffer vertex_buffers[] = {data.vertex_buffer};
-        VkDeviceSize offsets[] = {0};
-        init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
-
-        init.disp.cmdDraw(data.command_buffers[i], 3, 1, 0, 0);
-
-        init.disp.cmdEndRenderPass(data.command_buffers[i]);
-
-        if (init.disp.endCommandBuffer(data.command_buffers[i]) != VK_SUCCESS) {
-            std::cout << "failed to record command buffer\n";
-            return -1; // failed to record command buffer!
-        }
     }
     return 0;
 }
@@ -644,6 +608,73 @@ int draw_frame(Init& init, RenderData& data) {
     }
     data.image_in_flight[image_index] = data.in_flight_fences[data.current_frame];
 
+    {
+        int i = image_index;
+
+        init.disp.resetCommandBuffer(data.command_buffers[i], VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
+
+        VkCommandBufferBeginInfo begin_info = {};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+        if (init.disp.beginCommandBuffer(data.command_buffers[i], &begin_info) != VK_SUCCESS) {
+            return -1; // failed to begin recording command buffer
+        }
+
+        VkRenderPassBeginInfo render_pass_info = {};
+        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        render_pass_info.renderPass = data.render_pass;
+        render_pass_info.framebuffer = data.framebuffers[i];
+        render_pass_info.renderArea.offset = { 0, 0 };
+        render_pass_info.renderArea.extent = init.swapchain.extent;
+        VkClearValue clearColor{ { { 0.0f, 0.0f, 0.0f, 1.0f } } };
+        render_pass_info.clearValueCount = 1;
+        render_pass_info.pClearValues = &clearColor;
+
+        VkViewport viewport = {};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float)init.swapchain.extent.width;
+        viewport.height = (float)init.swapchain.extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor = {};
+        scissor.offset = { 0, 0 };
+        scissor.extent = init.swapchain.extent;
+
+        init.disp.cmdSetViewport(data.command_buffers[i], 0, 1, &viewport);
+        init.disp.cmdSetScissor(data.command_buffers[i], 0, 1, &scissor);
+
+        init.disp.cmdBeginRenderPass(data.command_buffers[i], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        init.disp.cmdBindPipeline(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
+
+        VkBuffer vertex_buffers[] = {data.vertex_buffer};
+        VkDeviceSize offsets[] = {0};
+        init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
+
+        glm::vec3 cam_pos = { 0.f,0.f,-2.f };
+        glm::mat4 view = glm::translate(glm::mat4(1.f), cam_pos);
+        glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
+        projection[1][1] *= -1;
+        glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(data.number_of_frame * 0.1f), glm::vec3(0, 1, 0));
+        glm::mat4 mesh_matrix = projection * view * model;
+
+        VertexShaderPushConstants constants{};
+        constants.mvp_matrix = mesh_matrix;
+
+        init.disp.cmdPushConstants(data.command_buffers[i], data.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VertexShaderPushConstants), &constants);
+
+        init.disp.cmdDraw(data.command_buffers[i], 3, 1, 0, 0);
+
+        init.disp.cmdEndRenderPass(data.command_buffers[i]);
+
+        if (init.disp.endCommandBuffer(data.command_buffers[i]) != VK_SUCCESS) {
+            std::cout << "failed to record command buffer\n";
+            return -1; // failed to record command buffer!
+        }
+    }
+
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
@@ -688,6 +719,7 @@ int draw_frame(Init& init, RenderData& data) {
     }
 
     data.current_frame = (data.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+    data.number_of_frame += 1;
     return 0;
 }
 
