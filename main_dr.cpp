@@ -579,15 +579,22 @@ int draw_frame(Init& init, RenderData& data) {
             image_subresource_range.baseArrayLayer = 0;
             image_subresource_range.layerCount = 1;
 
-            VkImageMemoryBarrier image_memory_barrier{};
-            image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            image_memory_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
-            image_memory_barrier.image = data.swapchain_images[i];
-            image_memory_barrier.subresourceRange = image_subresource_range;
+            VkImageMemoryBarrier2 image_memory_barrier2{};
+            image_memory_barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            image_memory_barrier2.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            image_memory_barrier2.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            image_memory_barrier2.newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+            image_memory_barrier2.srcStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            image_memory_barrier2.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            image_memory_barrier2.image = data.swapchain_images[i];
+            image_memory_barrier2.subresourceRange = image_subresource_range;
 
-            init.disp.cmdPipelineBarrier(data.command_buffers[i], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
+            VkDependencyInfo dependency_info{};
+            dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR;
+            dependency_info.imageMemoryBarrierCount = 1;
+            dependency_info.pImageMemoryBarriers = &image_memory_barrier2;
+
+            init.disp.cmdPipelineBarrier2(data.command_buffers[i], &dependency_info);
         }
 
         VkDebugUtilsLabelEXT debug_utils_label{};
@@ -677,15 +684,22 @@ int draw_frame(Init& init, RenderData& data) {
             image_subresource_range.baseArrayLayer = 0;
             image_subresource_range.layerCount = 1;
 
-            VkImageMemoryBarrier image_memory_barrier{};
-            image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            image_memory_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
-            image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            image_memory_barrier.image = data.swapchain_images[i];
-            image_memory_barrier.subresourceRange = image_subresource_range;
+            VkImageMemoryBarrier2 image_memory_barrier2{};
+            image_memory_barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            image_memory_barrier2.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            image_memory_barrier2.oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+            image_memory_barrier2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            image_memory_barrier2.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            image_memory_barrier2.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            image_memory_barrier2.image = data.swapchain_images[i];
+            image_memory_barrier2.subresourceRange = image_subresource_range;
 
-            init.disp.cmdPipelineBarrier(data.command_buffers[i], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
+            VkDependencyInfo dependency_info{};
+            dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR;
+            dependency_info.imageMemoryBarrierCount = 1;
+            dependency_info.pImageMemoryBarriers = &image_memory_barrier2;
+
+            init.disp.cmdPipelineBarrier2(data.command_buffers[i], &dependency_info);
         }
 
         if (init.disp.endCommandBuffer(data.command_buffers[i]) != VK_SUCCESS) {
