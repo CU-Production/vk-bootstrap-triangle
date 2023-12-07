@@ -3,83 +3,9 @@ project(vulkan_hpp_tutorial)
 
 set(CMAKE_CXX_STANDARD 20)
 
-find_package(Vulkan REQUIRED)
-# GLFW
-set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "shared")
-set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "glfw examples")
-set(GLFW_BUILD_TESTS OFF CACHE INTERNAL "glfw tests")
-set(GLFW_BUILD_DOCS OFF CACHE INTERNAL "glfw docs")
-set(GLFW_INSTALL OFF CACHE INTERNAL "glfw install")
-set(GLFW_VULKAN_STATIC OFF CACHE INTERNAL "glfw vulkan")
-add_subdirectory(3rd_party/glfw)
+# 3rd_party libs
+add_subdirectory(3rd_party)
 
-# glm
-add_library(glm INTERFACE)
-target_include_directories(glm INTERFACE 3rd_party/glm)
-
-set(APP_NAME main)
-
-add_executable(${APP_NAME} main.cpp 3rd_party/vk-bootstrap/VkBootstrap.cpp)
-target_include_directories(${APP_NAME} PRIVATE
-        3rd_party/vk-bootstrap
-        3rd_party/vma
-        ${Vulkan_INCLUDE_DIR})
-target_link_libraries(${APP_NAME} PRIVATE glfw glm ${CMAKE_DL_LIBS})
-
-# shader compile
-if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")
-    set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin/glslangValidator")
-else()
-    set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin32/glslangValidator")
-endif()
-
-set(GLSL_SOURCE_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert)
-
-foreach(GLSL ${GLSL_SOURCE_FILES})
-    get_filename_component(FILE_NAME ${GLSL} NAME)
-    set(SPIRV "${CMAKE_CURRENT_BINARY_DIR}/shaders/${FILE_NAME}.spv")
-    message(${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV})
-    add_custom_command(
-            TARGET ${APP_NAME} PRE_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders/"
-            COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
-            DEPENDS ${GLSL}
-            VERBATIM
-    )
-endforeach(GLSL)
-
-set(APP_NAME main_dynamic_renderer)
-
-add_executable(${APP_NAME} main_dr.cpp 3rd_party/vk-bootstrap/VkBootstrap.cpp)
-target_include_directories(${APP_NAME} PRIVATE
-        3rd_party/vk-bootstrap
-        3rd_party/vma
-        ${Vulkan_INCLUDE_DIR})
-target_link_libraries(${APP_NAME} PRIVATE glfw glm ${CMAKE_DL_LIBS})
-
-# shader compile
-if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")
-    set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin/glslangValidator")
-else()
-    set(GLSL_VALIDATOR "$ENV{VULKAN_SDK}/Bin32/glslangValidator")
-endif()
-
-set(GLSL_SOURCE_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert)
-
-foreach(GLSL ${GLSL_SOURCE_FILES})
-    get_filename_component(FILE_NAME ${GLSL} NAME)
-    set(SPIRV "${CMAKE_CURRENT_BINARY_DIR}/shaders/${FILE_NAME}.spv")
-    message(${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV})
-    add_custom_command(
-            TARGET ${APP_NAME} PRE_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders/"
-            COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
-            DEPENDS ${GLSL}
-            VERBATIM
-    )
-endforeach(GLSL)
-
+# apps
+add_subdirectory(src/triangle)
+add_subdirectory(src/dynamic_rendering)
