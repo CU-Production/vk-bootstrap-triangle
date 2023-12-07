@@ -1,0 +1,20 @@
+#version 460 core
+#extension GL_EXT_mesh_shader : enable
+#extension GL_ARB_separate_shader_objects : enable
+
+// Typical limit: 128 invocations.
+layout (local_size_x=1, local_size_y=1, local_size_z=1) in;
+
+struct TaskData {
+	uvec3 taskDispatchId;
+};
+taskPayloadSharedEXT TaskData td;
+
+void main ()
+{
+	// Prepare payload for children.
+	td.taskDispatchId = gl_GlobalInvocationID;
+
+	// dispatch mesh shaders
+	EmitMeshTasksEXT(1, 1, 1);
+}
