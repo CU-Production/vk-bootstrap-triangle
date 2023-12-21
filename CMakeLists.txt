@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.26)
-project(vulkan_hpp_tutorial)
+project(vb-bootstrap-test)
 
 set(CMAKE_CXX_STANDARD 20)
 
