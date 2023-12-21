@@ -25,3 +25,7 @@ target_include_directories(vkb PUBLIC vk-bootstrap ${Vulkan_INCLUDE_DIR})
 # imgui
 add_library(imgui imgui/imgui.cpp imgui/imgui_demo.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp)
 target_include_directories(imgui PUBLIC imgui)
+
+## ozz-animation
+add_library(ozzanim ozz/src/mesh.cc ozz/src/ozz_animation.cc ozz/src/ozz_base.cc)
+target_include_directories(ozzanim PUBLIC ozz/include)
