@@ -21,3 +21,7 @@ target_include_directories(vma INTERFACE vma)
 # vk-bootstrap
 add_library(vkb vk-bootstrap/VkBootstrap.cpp vk-bootstrap/VkBootstrap.h vk-bootstrap/VkBootstrapDispatch.h)
 target_include_directories(vkb PUBLIC vk-bootstrap ${Vulkan_INCLUDE_DIR})
+
+# imgui
+add_library(imgui imgui/imgui.cpp imgui/imgui_demo.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp)
+target_include_directories(imgui PUBLIC imgui)
