@@ -188,7 +188,10 @@ int device_initialization(Init& init) {
 int create_swapchain(Init& init) {
 
     vkb::SwapchainBuilder swapchain_builder{ init.device };
-    auto swap_ret = swapchain_builder.set_old_swapchain(init.swapchain).build();
+    auto swap_ret = swapchain_builder
+        .set_old_swapchain(init.swapchain)
+        .set_desired_format({VK_FORMAT_R8G8B8A8_SRGB})
+        .build();
     if (!swap_ret) {
         std::cout << swap_ret.error().message() << " " << swap_ret.vk_result() << "\n";
         return -1;
@@ -697,7 +700,8 @@ int draw_frame(Init& init, RenderData& data) {
 
         init.disp.cmdBeginDebugUtilsLabelEXT(data.command_buffers[i], &debug_utils_label);
 
-        VkClearValue clearColor{ { { 0.0f, 0.0f, 0.0f, 1.0f } } };
+        const ImVec4 clear_color = data.imgui_state.clear_color;
+        VkClearValue clearColor{ { clear_color.x, clear_color.y, clear_color.z, clear_color.w } };
 
         VkViewport viewport = {};
         viewport.x = 0.0f;
