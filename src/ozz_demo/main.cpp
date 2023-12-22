@@ -79,6 +79,11 @@ struct RenderData {
     std::vector<VkImage> swapchain_images;
     std::vector<VkImageView> swapchain_image_views;
 
+    VkImage depth_image;
+    VmaAllocation depth_image_allocation;
+    VkImageView depth_image_view;
+    VkFormat depth_image_format;
+
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
 
@@ -94,13 +99,9 @@ struct RenderData {
 
     VkBuffer vertex_buffer;
     VmaAllocation vertex_buffer_allocation;
-    VkBuffer vertex_buffer_staging_buffer;
-    VmaAllocation vertex_buffer_staging_buffer_allocation;
 
     VkBuffer index_buffer;
     VmaAllocation index_buffer_allocation;
-    VkBuffer index_buffer_staging_buffer;
-    VmaAllocation index_buffer_staging_buffer_allocation;
 
     std::vector<VkBuffer> shader_storage_buffers;
     std::vector<VmaAllocation> shader_storage_buffer_allocations;
@@ -231,7 +232,10 @@ int device_initialization(Init& init) {
 int create_swapchain(Init& init) {
 
     vkb::SwapchainBuilder swapchain_builder{ init.device };
-    auto swap_ret = swapchain_builder.set_old_swapchain(init.swapchain).build();
+    auto swap_ret = swapchain_builder
+        .set_old_swapchain(init.swapchain)
+        .set_desired_format({VK_FORMAT_R8G8B8A8_SRGB})
+        .build();
     if (!swap_ret) {
         std::cout << swap_ret.error().message() << " " << swap_ret.vk_result() << "\n";
         return -1;
@@ -255,6 +259,50 @@ int get_queues(Init& init, RenderData& data) {
         return -1;
     }
     data.present_queue = pq.value();
+    return 0;
+}
+
+int create_depthimage(Init& init, RenderData& data) {
+    data.depth_image_format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+
+    VkImageCreateInfo depth_image_info{};
+    depth_image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    depth_image_info.imageType = VK_IMAGE_TYPE_2D;
+    depth_image_info.format = data.depth_image_format;
+    depth_image_info.extent.width = init.swapchain.extent.width;
+    depth_image_info.extent.height = init.swapchain.extent.height;
+    depth_image_info.extent.depth = 1;
+    depth_image_info.mipLevels = 1;
+    depth_image_info.arrayLayers = 1;
+    depth_image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth_image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    depth_image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    VmaAllocationCreateInfo depthAllocInfo{};
+    depthAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    depthAllocInfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vmaCreateImage(init.allocator, &depth_image_info, &depthAllocInfo, &data.depth_image, &data.depth_image_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "could not allocate depth buffer memory\n";
+        return -1;
+    }
+
+    VkImageViewCreateInfo depth_image_view_info{};
+    depth_image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    depth_image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    depth_image_view_info.image = data.depth_image;
+    depth_image_view_info.format = data.depth_image_format;
+    depth_image_view_info.subresourceRange.baseMipLevel = 0;
+    depth_image_view_info.subresourceRange.levelCount = 1;
+    depth_image_view_info.subresourceRange.baseArrayLayer = 0;
+    depth_image_view_info.subresourceRange.layerCount = 1;
+    depth_image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+
+    if (init.disp.createImageView(&depth_image_view_info, nullptr, &data.depth_image_view) != VK_SUCCESS) {
+        std::cout << "could not create depth buffer image view\n";
+        return -1;
+    }
+
     return 0;
 }
 
@@ -424,10 +472,22 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
     dynamic_info.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
     dynamic_info.pDynamicStates = dynamic_states.data();
 
+    VkPipelineDepthStencilStateCreateInfo depthz_stencil_info = {};
+    depthz_stencil_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthz_stencil_info.depthTestEnable = VK_TRUE;
+    depthz_stencil_info.depthWriteEnable = VK_TRUE;
+    depthz_stencil_info.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthz_stencil_info.depthBoundsTestEnable = VK_FALSE;
+    depthz_stencil_info.minDepthBounds = 0.0f;
+    depthz_stencil_info.maxDepthBounds = 1.0f;
+    depthz_stencil_info.stencilTestEnable = VK_FALSE;
+
     VkPipelineRenderingCreateInfo pipeline_rendering_create_info{};
     pipeline_rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     pipeline_rendering_create_info.colorAttachmentCount = 1;
     pipeline_rendering_create_info.pColorAttachmentFormats = &init.swapchain.image_format;
+    pipeline_rendering_create_info.depthAttachmentFormat = data.depth_image_format;
+    pipeline_rendering_create_info.stencilAttachmentFormat = data.depth_image_format;
 
     VkGraphicsPipelineCreateInfo pipeline_info = {};
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -441,6 +501,7 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
     pipeline_info.pMultisampleState = &multisampling;
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_info;
+    pipeline_info.pDepthStencilState = &depthz_stencil_info;
     pipeline_info.layout = data.pipeline_layout;
     // pipeline_info.renderPass = data.render_pass;
     pipeline_info.renderPass = nullptr;
@@ -644,6 +705,9 @@ int create_vertex_buffer(Init& init, RenderData& data) {
     }
 
     /* staging buffer for copy */
+    VkBuffer vertex_buffer_staging_buffer;
+    VmaAllocation vertex_buffer_staging_buffer_allocation;
+
     VkBufferCreateInfo staging_buffer_alloc_info{};
     staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     staging_buffer_alloc_info.size = buffer_size;;
@@ -652,16 +716,16 @@ int create_vertex_buffer(Init& init, RenderData& data) {
     VmaAllocationCreateInfo staging_alloc_info{};
     staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
 
-    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &data.vertex_buffer_staging_buffer, &data.vertex_buffer_staging_buffer_allocation, nullptr) != VK_SUCCESS) {
+    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &vertex_buffer_staging_buffer, &vertex_buffer_staging_buffer_allocation, nullptr) != VK_SUCCESS) {
         std::cout << "failed to create vertex buffer\n";
         return -1; // failed to create vertex buffer
     }
 
     /* copy data to staging buffer*/
     void* mapped_data;
-    vmaMapMemory(init.allocator, data.vertex_buffer_staging_buffer_allocation, &mapped_data);
+    vmaMapMemory(init.allocator, vertex_buffer_staging_buffer_allocation, &mapped_data);
     memcpy(mapped_data, data.vertices.data(), vertex_buffer_info.size);
-    vmaUnmapMemory(init.allocator, data.vertex_buffer_staging_buffer_allocation);
+    vmaUnmapMemory(init.allocator, vertex_buffer_staging_buffer_allocation);
 
     VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
     cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -682,7 +746,7 @@ int create_vertex_buffer(Init& init, RenderData& data) {
     copyRegion.srcOffset = 0; // Optional
     copyRegion.dstOffset = 0; // Optional
     copyRegion.size = buffer_size;
-    init.disp.cmdCopyBuffer(commandBuffer, data.vertex_buffer_staging_buffer, data.vertex_buffer, 1, &copyRegion);
+    init.disp.cmdCopyBuffer(commandBuffer, vertex_buffer_staging_buffer, data.vertex_buffer, 1, &copyRegion);
 
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -695,6 +759,8 @@ int create_vertex_buffer(Init& init, RenderData& data) {
     init.disp.queueWaitIdle(data.graphics_queue);
 
     init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+    vmaDestroyBuffer(init.allocator, vertex_buffer_staging_buffer, vertex_buffer_staging_buffer_allocation);
 
     return 0;
 }
@@ -717,6 +783,10 @@ int create_index_buffer(Init& init, RenderData& data) {
     }
 
     /* staging buffer for copy */
+    VkBuffer index_buffer_staging_buffer;
+    VmaAllocation index_buffer_staging_buffer_allocation;
+    VmaAllocationInfo vma_index_buffer_alloc_info;
+
     VkBufferCreateInfo staging_buffer_alloc_info{};
     staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     staging_buffer_alloc_info.size = buffer_size;;
@@ -724,17 +794,15 @@ int create_index_buffer(Init& init, RenderData& data) {
 
     VmaAllocationCreateInfo staging_alloc_info{};
     staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &data.index_buffer_staging_buffer, &data.index_buffer_staging_buffer_allocation, nullptr) != VK_SUCCESS) {
+    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &index_buffer_staging_buffer, &index_buffer_staging_buffer_allocation, &vma_index_buffer_alloc_info) != VK_SUCCESS) {
         std::cout << "failed to create index buffer\n";
         return -1; // failed to create vertex buffer
     }
 
     /* copy data to staging buffer*/
-    void* mapped_data;
-    vmaMapMemory(init.allocator, data.index_buffer_staging_buffer_allocation, &mapped_data);
-    memcpy(mapped_data, data.indices.data(), index_buffer_info.size);
-    vmaUnmapMemory(init.allocator, data.index_buffer_staging_buffer_allocation);
+    memcpy(vma_index_buffer_alloc_info.pMappedData, data.indices.data(), index_buffer_info.size);
 
     VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
     cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -755,7 +823,7 @@ int create_index_buffer(Init& init, RenderData& data) {
     copyRegion.srcOffset = 0; // Optional
     copyRegion.dstOffset = 0; // Optional
     copyRegion.size = buffer_size;
-    init.disp.cmdCopyBuffer(commandBuffer, data.index_buffer_staging_buffer, data.index_buffer, 1, &copyRegion);
+    init.disp.cmdCopyBuffer(commandBuffer, index_buffer_staging_buffer, data.index_buffer, 1, &copyRegion);
 
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -768,6 +836,8 @@ int create_index_buffer(Init& init, RenderData& data) {
     init.disp.queueWaitIdle(data.graphics_queue);
 
     init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+    vmaDestroyBuffer(init.allocator, index_buffer_staging_buffer, index_buffer_staging_buffer_allocation);
 
     return 0;
 }
@@ -891,7 +961,7 @@ int create_descriptor_set_layout(Init& init, RenderData& data) {
     layout_info.pBindings = &ssbo_layout_binding;
 
     if (init.disp.createDescriptorSetLayout(&layout_info, nullptr, &data.descriptor_set_layout) != VK_SUCCESS) {
-        std::cout <<"failed to create descriptor set layout!";
+        std::cout <<"failed to create descriptor set layout!\n";
         return -1;
     }
 
@@ -908,7 +978,7 @@ int create_descriptor_sets(Init& init, RenderData& data) {
 
     data.descriptor_sets.resize(init.swapchain.image_count);
     if (init.disp.allocateDescriptorSets(&allocInfo, data.descriptor_sets.data()) != VK_SUCCESS) {
-        std::cout << "failed to allocate descriptor sets!";
+        std::cout << "failed to allocate descriptor sets!\n";
         return -1;
     }
 
@@ -1058,6 +1128,7 @@ int draw_frame(Init& init, RenderData& data) {
         init.disp.cmdBeginDebugUtilsLabelEXT(data.command_buffers[i], &debug_utils_label);
 
         VkClearValue clearColor{ { { 0.0f, 0.0f, 0.0f, 1.0f } } };
+        VkClearValue clearDepth{{1.0, 0}};
 
         VkViewport viewport = {};
         viewport.x = 0.0f;
@@ -1079,12 +1150,21 @@ int draw_frame(Init& init, RenderData& data) {
         color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_attachment_info.clearValue = clearColor;
 
+        VkRenderingAttachmentInfo depth_stencil_attachment_info{};
+        depth_stencil_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth_stencil_attachment_info.imageView = data.depth_image_view;
+        depth_stencil_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+        depth_stencil_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_stencil_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depth_stencil_attachment_info.clearValue = clearDepth;
+
         VkRenderingInfo rendering_info{};
         rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         rendering_info.renderArea = {{0, 0}, {init.swapchain.extent.width, init.swapchain.extent.height}};
         rendering_info.layerCount = 1;
         rendering_info.colorAttachmentCount = 1;
         rendering_info.pColorAttachments = &color_attachment_info;
+        rendering_info.pDepthAttachment = &depth_stencil_attachment_info;
 
         init.disp.cmdSetViewport(data.command_buffers[i], 0, 1, &viewport);
         init.disp.cmdSetScissor(data.command_buffers[i], 0, 1, &scissor);
@@ -1102,7 +1182,7 @@ int draw_frame(Init& init, RenderData& data) {
         glm::mat4 view = glm::translate(glm::mat4(1.f), cam_pos);
         glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
         projection[1][1] *= -1;
-        glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(data.number_of_frame * 0.1f), glm::vec3(0, 1, 0));
+        glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(data.number_of_frame * 0.025f), glm::vec3(0, 1, 0));
         glm::mat4 mesh_matrix = projection * view * model;
 
         VertexShaderPushConstants constants{};
@@ -1118,6 +1198,11 @@ int draw_frame(Init& init, RenderData& data) {
         init.disp.cmdBindDescriptorSets(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.pipeline_layout, 0, 1, &data.descriptor_sets[i], 0, nullptr);
 
         init.disp.cmdDrawIndexed(data.command_buffers[i], data.indices.size(), 1, 0, 0, 0);
+
+        init.disp.cmdEndRendering(data.command_buffers[i]);
+
+        init.disp.cmdEndDebugUtilsLabelEXT(data.command_buffers[i]);
+
 
         // imgui
         {
@@ -1146,18 +1231,32 @@ int draw_frame(Init& init, RenderData& data) {
             ImGui::Render();
             ImDrawData* draw_data = ImGui::GetDrawData();
 
-            debug_utils_label.pLabelName = "IMGUI";
+            debug_utils_label.pLabelName = "IMGUI pass";
             init.disp.cmdBeginDebugUtilsLabelEXT(data.command_buffers[i], &debug_utils_label);
+
+            VkRenderingAttachmentInfo color_attachment_info{};
+            color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            color_attachment_info.imageView = data.swapchain_image_views[i];
+            color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+            color_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            color_attachment_info.clearValue = clearColor;
+            rendering_info.colorAttachmentCount = 1;
+            rendering_info.pColorAttachments = &color_attachment_info;
+            rendering_info.pDepthAttachment = VK_NULL_HANDLE;
+            init.disp.cmdBeginRendering(data.command_buffers[i], &rendering_info);
 
             // Record dear imgui primitives into command buffer
             ImGui_ImplVulkan_RenderDrawData(draw_data, data.command_buffers[i]);
 
+            init.disp.cmdEndRendering(data.command_buffers[i]);
+
             init.disp.cmdEndDebugUtilsLabelEXT(data.command_buffers[i]);
+
         }
 
-        init.disp.cmdEndRendering(data.command_buffers[i]);
 
-        init.disp.cmdEndDebugUtilsLabelEXT(data.command_buffers[i]);
+
 
         // End frame
         {
@@ -1263,10 +1362,8 @@ void cleanup(Init& init, RenderData& data) {
         vmaDestroyBuffer(init.allocator, data.shader_storage_buffers[i], data.shader_storage_buffer_allocations[i]);
     }
 
-    vmaDestroyBuffer(init.allocator, data.index_buffer_staging_buffer, data.index_buffer_staging_buffer_allocation);
     vmaDestroyBuffer(init.allocator, data.index_buffer, data.index_buffer_allocation);
 
-    vmaDestroyBuffer(init.allocator, data.vertex_buffer_staging_buffer, data.vertex_buffer_staging_buffer_allocation);
     vmaDestroyBuffer(init.allocator, data.vertex_buffer, data.vertex_buffer_allocation);
 
     for (size_t i = 0; i < init.swapchain.image_count; i++) {
@@ -1281,6 +1378,9 @@ void cleanup(Init& init, RenderData& data) {
     init.disp.destroyPipelineLayout(data.pipeline_layout, nullptr);
 
     init.swapchain.destroy_image_views(data.swapchain_image_views);
+
+    init.disp.destroyImageView(data.depth_image_view, nullptr);
+    vmaDestroyImage(init.allocator, data.depth_image, data.depth_image_allocation);
 
     vkb::destroy_swapchain(init.swapchain);
 
@@ -1302,6 +1402,7 @@ int main() {
     if (0 != device_initialization(init)) return -1;
     if (0 != create_swapchain(init)) return -1;
     if (0 != get_queues(init, render_data)) return -1;
+    if (0 != create_depthimage(init, render_data)) return -1;
     if (0 != ozz_init(init, render_data)) return -1;
     if (0 != skel_data_loaded(init, render_data, "data/ozz_skin_skeleton.ozz")) return -1;
     if (0 != anim_data_loaded(init, render_data, "data/ozz_skin_animation.ozz")) return -1;

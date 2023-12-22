@@ -18,4 +18,4 @@
 
 ## 5. ozz-animation
 
-![ozz](screenshots/Snipaste_2023-12-22_09-21-30.png)
+![ozz](screenshots/Snipaste_2023-12-22_13-05-46.png)
