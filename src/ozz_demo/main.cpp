@@ -110,12 +110,6 @@ struct RenderData {
     VkDescriptorSetLayout descriptor_set_layout;
     std::vector<VkDescriptorSet> descriptor_sets;
 
-    struct {
-        bool show_demo_window = true;
-        bool show_another_window = false;
-        ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-    } imgui_state;
-
     std::unique_ptr<ozz_t> ozz;
     struct {
         bool skeleton;
@@ -789,7 +783,7 @@ int create_descriptor_pool(Init& init, RenderData& data) {
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.poolSizeCount = pool_size.size();
     pool_info.pPoolSizes = pool_size.data();
-    pool_info.maxSets = init.swapchain.image_count;
+    pool_info.maxSets = init.swapchain.image_count * 2;
     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
     init.disp.createDescriptorPool(&pool_info, nullptr, &data.descriptor_pool);
@@ -847,11 +841,6 @@ int imgui_initialization(Init& init, RenderData& data) {
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
     //IM_ASSERT(font != nullptr);
-
-    // Our state
-    data.imgui_state.show_demo_window = true;
-    data.imgui_state.show_another_window = false;
-    data.imgui_state.clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     return 0;
 }
@@ -1131,51 +1120,27 @@ int draw_frame(Init& init, RenderData& data) {
         init.disp.cmdDrawIndexed(data.command_buffers[i], data.indices.size(), 1, 0, 0, 0);
 
         // imgui
-        if (false)
         {
             // Start the Dear ImGui frame
             ImGui_ImplVulkan_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-            if (data.imgui_state.show_demo_window)
-                ImGui::ShowDemoWindow(&data.imgui_state.show_demo_window);
-
-            // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
-            {
-                static float f = 0.0f;
-                static int counter = 0;
-
-                ImGuiIO& io = ImGui::GetIO();
-
-                ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
-
-                ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-                ImGui::Checkbox("Demo Window", &data.imgui_state.show_demo_window);      // Edit bools storing our window open/close state
-                ImGui::Checkbox("Another Window", &data.imgui_state.show_another_window);
-
-                ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-                ImGui::ColorEdit3("clear color", (float*)&data.imgui_state.clear_color); // Edit 3 floats representing a color
-
-                if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-                    counter++;
-                ImGui::SameLine();
-                ImGui::Text("counter = %d", counter);
-
-                ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-                ImGui::End();
+            ImGui::SetNextWindowPos({ 20, 20 }, ImGuiCond_Once);
+            ImGui::SetNextWindowSize({ 220, 150 }, ImGuiCond_Once);
+            ImGui::SetNextWindowBgAlpha(0.35f);
+            if (ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Time Controls:");
+                ImGui::Checkbox("Paused", &data.time.paused);
+                ImGui::SliderFloat("Factor", &data.time.factor, 0.0f, 10.0f, "%.1f", 1.0f);
+                if (ImGui::SliderFloat("Ratio", &data.time.anim_ratio, 0.0f, 1.0f)) {
+                    data.time.anim_ratio_ui_override = true;
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    data.time.anim_ratio_ui_override = false;
+                }
             }
-
-            // 3. Show another simple window.
-            if (data.imgui_state.show_another_window)
-            {
-                ImGui::Begin("Another Window", &data.imgui_state.show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-                ImGui::Text("Hello from another window!");
-                if (ImGui::Button("Close Me"))
-                    data.imgui_state.show_another_window = false;
-                ImGui::End();
-            }
+            ImGui::End();
 
             // Rendering
             ImGui::Render();
