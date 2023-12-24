@@ -16,6 +16,6 @@
 
 ![imgui](screenshots/Snipaste_2023-12-22_11-55-51.png)
 
-## 5. ozz-animation
+## 5. ozz-animation + VK_KHR_push_descriptor
 
 ![ozz](screenshots/Snipaste_2023-12-22_13-05-46.png)

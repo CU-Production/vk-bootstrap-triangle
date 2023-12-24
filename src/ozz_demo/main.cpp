@@ -103,13 +103,14 @@ struct RenderData {
     VkBuffer index_buffer;
     VmaAllocation index_buffer_allocation;
 
-    std::vector<VkBuffer> shader_storage_buffers;
-    std::vector<VmaAllocation> shader_storage_buffer_allocations;
-
     VkDescriptorPool descriptor_pool;
 
+    std::vector<VkBuffer> shader_storage_buffers;
+    std::vector<VmaAllocation> shader_storage_buffer_allocations;
+    std::vector<VkDescriptorBufferInfo> shader_storage_buffer_descriptor_buffer_infos;
+
     VkDescriptorSetLayout descriptor_set_layout;
-    std::vector<VkDescriptorSet> descriptor_sets;
+    std::vector<VkWriteDescriptorSet> write_descriptor_sets;
 
     std::unique_ptr<ozz_t> ozz;
     struct {
@@ -196,6 +197,7 @@ int device_initialization(Init& init) {
         // .add_required_extension("VK_KHR_timeline_semaphore")
         // .add_required_extension("VK_KHR_dynamic_rendering")
         .set_required_features_13(vulkan_13_features)
+        .add_required_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)
         .select();
     if (!phys_device_ret) {
         std::cout << phys_device_ret.error().message() << "\n";
@@ -929,6 +931,7 @@ int create_ssbo(Init& init, RenderData& data) {
 
     data.shader_storage_buffers.resize(init.swapchain.image_count);
     data.shader_storage_buffer_allocations.resize(init.swapchain.image_count);
+    data.shader_storage_buffer_descriptor_buffer_infos.resize(init.swapchain.image_count);
 
     for (size_t i = 0; i < init.swapchain.image_count; i++) {
         if (vmaCreateBuffer(init.allocator, &ssbo_info, &index_buffer_alloc_info, &data.shader_storage_buffers[i], &data.shader_storage_buffer_allocations[i], nullptr) != VK_SUCCESS) {
@@ -944,6 +947,12 @@ int create_ssbo(Init& init, RenderData& data) {
         vmaUnmapMemory(init.allocator, data.shader_storage_buffer_allocations[i]);
     }
 
+    for (size_t i = 0; i < init.swapchain.image_count; i++) {
+        data.shader_storage_buffer_descriptor_buffer_infos[i].buffer = data.shader_storage_buffers[i];
+        data.shader_storage_buffer_descriptor_buffer_infos[i].offset = 0;
+        data.shader_storage_buffer_descriptor_buffer_infos[i].range = buffer_size;
+    }
+
     return 0;
 }
 
@@ -957,6 +966,7 @@ int create_descriptor_set_layout(Init& init, RenderData& data) {
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     layout_info.bindingCount = 1;
     layout_info.pBindings = &ssbo_layout_binding;
 
@@ -968,37 +978,15 @@ int create_descriptor_set_layout(Init& init, RenderData& data) {
     return 0;
 }
 
-int create_descriptor_sets(Init& init, RenderData& data) {
-    std::vector<VkDescriptorSetLayout> layouts(init.swapchain.image_count, data.descriptor_set_layout);
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = data.descriptor_pool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(init.swapchain.image_count);
-    allocInfo.pSetLayouts = layouts.data();
-
-    data.descriptor_sets.resize(init.swapchain.image_count);
-    if (init.disp.allocateDescriptorSets(&allocInfo, data.descriptor_sets.data()) != VK_SUCCESS) {
-        std::cout << "failed to allocate descriptor sets!\n";
-        return -1;
-    }
-
-    const uint32_t buffer_size = sizeof(data.ozz->joint_matrices[0]) * data.ozz->joint_matrices.size();
+int create_write_descriptor_sets(Init& init, RenderData& data) {
+    data.write_descriptor_sets.resize(init.swapchain.image_count);
     for (int i = 0; i < init.swapchain.image_count; ++i) {
-        VkDescriptorBufferInfo uniform_buffer_info{};
-        uniform_buffer_info.buffer = data.shader_storage_buffers[i];
-        uniform_buffer_info.offset = 0;
-        uniform_buffer_info.range = buffer_size;
-
-        VkWriteDescriptorSet descriptor_write{};
-        descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptor_write.dstSet = data.descriptor_sets[i];
-        descriptor_write.dstBinding = 1;
-        descriptor_write.dstArrayElement = 0;
-        descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        descriptor_write.descriptorCount = 1;
-        descriptor_write.pBufferInfo = &uniform_buffer_info;
-
-        init.disp.updateDescriptorSets(1, &descriptor_write, 0, nullptr);
+        data.write_descriptor_sets[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        data.write_descriptor_sets[i].dstBinding = 1;
+        data.write_descriptor_sets[i].dstArrayElement = 0;
+        data.write_descriptor_sets[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        data.write_descriptor_sets[i].descriptorCount = 1;
+        data.write_descriptor_sets[i].pBufferInfo = &data.shader_storage_buffer_descriptor_buffer_infos[i];
     }
 
     return 0;
@@ -1195,7 +1183,7 @@ int draw_frame(Init& init, RenderData& data) {
         vmaMapMemory(init.allocator, data.shader_storage_buffer_allocations[i], &mapped_data);
         memcpy(mapped_data, data.ozz->joint_matrices.data(), buffer_size);
         vmaUnmapMemory(init.allocator, data.shader_storage_buffer_allocations[i]);
-        init.disp.cmdBindDescriptorSets(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.pipeline_layout, 0, 1, &data.descriptor_sets[i], 0, nullptr);
+        init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.pipeline_layout, 0, 1, &data.write_descriptor_sets[i]);
 
         init.disp.cmdDrawIndexed(data.command_buffers[i], data.indices.size(), 1, 0, 0, 0);
 
@@ -1413,7 +1401,7 @@ int main() {
     if (0 != create_ssbo(init, render_data)) return -1;
     if (0 != create_descriptor_pool(init, render_data)) return -1;
     if (0 != create_descriptor_set_layout(init, render_data)) return -1;
-    if (0 != create_descriptor_sets(init, render_data)) return -1;
+    if (0 != create_write_descriptor_sets(init, render_data)) return -1;
     if (0 != create_graphics_pipeline(init, render_data)) return -1;
     if (0 != create_command_buffers(init, render_data)) return -1;
     if (0 != create_sync_objects(init, render_data)) return -1;
