@@ -19,3 +19,7 @@
 ## 5. ozz-animation + VK_KHR_push_descriptor
 
 ![ozz](screenshots/Snipaste_2023-12-22_13-05-46.png)
+
+## 6. pbr
+
+![pbr](screenshots/Snipaste_2023-12-24_21-13-41.png)

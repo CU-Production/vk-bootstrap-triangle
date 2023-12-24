@@ -29,3 +29,7 @@ target_include_directories(imgui PUBLIC imgui)
 ## ozz-animation
 add_library(ozzanim ozz/src/mesh.cc ozz/src/ozz_animation.cc ozz/src/ozz_base.cc)
 target_include_directories(ozzanim PUBLIC ozz/include)
+
+##  tinyobjloader
+add_library(tinyobjloader INTERFACE)
+target_include_directories(tinyobjloader INTERFACE TinyObj)
