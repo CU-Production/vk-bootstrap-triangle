@@ -33,3 +33,7 @@ target_include_directories(ozzanim PUBLIC ozz/include)
 ##  tinyobjloader
 add_library(tinyobjloader INTERFACE)
 target_include_directories(tinyobjloader INTERFACE TinyObj)
+
+## stb
+add_library(stb INTERFACE)
+target_include_directories(stb INTERFACE stb)
