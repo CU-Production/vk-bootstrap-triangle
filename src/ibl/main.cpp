@@ -46,7 +46,7 @@ struct SpheresVertexShaderPushConstants {
 struct SpheresPixelShaderPushConstants {
     glm::vec4 lightPositions[4];
     glm::vec4 cameraPosition;
-    glm::vec4 albedo;
+    glm::vec4 albedo_maxPreFilterMips;
 };
 
 struct SkyboxPixelShaderPushConstants {
@@ -523,7 +523,7 @@ int create_skybox_graphics_pipeline(Init& init, RenderData& data) {
 }
 
 int create_spheres_graphics_pipeline(Init& init, RenderData& data) {
-        auto vert_code = readFile("shaders/ibl.hlsl.vert.spv");
+    auto vert_code = readFile("shaders/ibl.hlsl.vert.spv");
     auto frag_code = readFile("shaders/ibl.hlsl.frag.spv");
 
     VkShaderModule vert_module = createShaderModule(init, vert_code);
@@ -638,8 +638,8 @@ int create_spheres_graphics_pipeline(Init& init, RenderData& data) {
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_info.setLayoutCount = 0;
-    // pipeline_layout_info.pSetLayouts = &data.descriptor_set_layout;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &data.spheres_pipeline.descriptor_set_layout;
     pipeline_layout_info.pushConstantRangeCount = static_cast<uint32_t>(push_constant_ranges.size());
     pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data();
 
@@ -986,6 +986,43 @@ int create_skybox_descriptor_set_layout(Init& init, RenderData& data) {
 
     if (init.disp.createDescriptorSetLayout(&layout_info, nullptr, &data.skybox_pipeline.descriptor_set_layout) != VK_SUCCESS) {
         std::cout <<"failed to create skybox descriptor set layout!\n";
+        return -1;
+    }
+    return 0;
+}
+
+int create_spheres_descriptor_set_layout(Init& init, RenderData& data) {
+    VkDescriptorSetLayoutBinding diffuse_irradiance_layout_binding{};
+    diffuse_irradiance_layout_binding.binding = 2;
+    diffuse_irradiance_layout_binding.descriptorCount = 1;
+    diffuse_irradiance_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    diffuse_irradiance_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    diffuse_irradiance_layout_binding.pImmutableSamplers = nullptr; // Optional
+
+    VkDescriptorSetLayoutBinding prefilter_env_layout_binding{};
+    prefilter_env_layout_binding.binding = 3;
+    prefilter_env_layout_binding.descriptorCount = 1;
+    prefilter_env_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    prefilter_env_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    prefilter_env_layout_binding.pImmutableSamplers = nullptr; // Optional
+
+    VkDescriptorSetLayoutBinding envBrdf_layout_binding{};
+    envBrdf_layout_binding.binding = 4;
+    envBrdf_layout_binding.descriptorCount = 1;
+    envBrdf_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    envBrdf_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    envBrdf_layout_binding.pImmutableSamplers = nullptr; // Optional
+
+    std::array<VkDescriptorSetLayoutBinding, 3> layout_bindings = {diffuse_irradiance_layout_binding, prefilter_env_layout_binding, envBrdf_layout_binding};
+
+    VkDescriptorSetLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    layout_info.bindingCount = layout_bindings.size();
+    layout_info.pBindings = layout_bindings.data();
+
+    if (init.disp.createDescriptorSetLayout(&layout_info, nullptr, &data.spheres_pipeline.descriptor_set_layout) != VK_SUCCESS) {
+        std::cout <<"failed to create spheres descriptor set layout!\n";
         return -1;
     }
     return 0;
@@ -2007,9 +2044,42 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.lightPositions[2] = {10.f, -3.f, -8.f, 0.0f,};
             ps_constants.lightPositions[3] = {10.f, -3.f,  8.f, 0.0f,};
             ps_constants.cameraPosition = {cam_pos.x, cam_pos.y, cam_pos.z, 0.0f,};
-            ps_constants.albedo = data.imgui_state.albedo;
+            ps_constants.albedo_maxPreFilterMips = data.imgui_state.albedo;
+            ps_constants.albedo_maxPreFilterMips.w = 8 - 1; // mip_count = 8, max mip level is 7
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SpheresVertexShaderPushConstants), sizeof(SpheresPixelShaderPushConstants), &ps_constants);
+
+            std::vector<VkWriteDescriptorSet> write_descriptor_sets{};
+
+            VkWriteDescriptorSet diffuseDesSet{};
+            diffuseDesSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            diffuseDesSet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            diffuseDesSet.dstBinding = 2;
+            diffuseDesSet.descriptorCount = 1;
+            diffuseDesSet.pImageInfo = &data.diffuse_irradiance_cubemap.descriptor_image_info;
+            write_descriptor_sets.push_back(diffuseDesSet);
+
+            VkWriteDescriptorSet prefilterEnvDesSet{};
+            prefilterEnvDesSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            prefilterEnvDesSet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            prefilterEnvDesSet.dstBinding = 3;
+            prefilterEnvDesSet.descriptorCount = 1;
+            prefilterEnvDesSet.pImageInfo = &data.prefilter_env_cubemap.descriptor_image_info;
+            write_descriptor_sets.push_back(prefilterEnvDesSet);
+
+            VkWriteDescriptorSet envBrdfDesSet{};
+            envBrdfDesSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            envBrdfDesSet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            envBrdfDesSet.dstBinding = 1;
+            envBrdfDesSet.descriptorCount = 1;
+            envBrdfDesSet.pImageInfo = &data.envBrdf_img.descriptor_image_info;
+            write_descriptor_sets.push_back(envBrdfDesSet);
+
+            // init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 3, write_descriptor_sets.data());
+            init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &diffuseDesSet);
+            init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &prefilterEnvDesSet);
+            // FIXME: crash here
+            //init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &envBrdfDesSet);
 
             init.disp.cmdDrawIndexed(data.command_buffers[i], data.sphere_model.indices.size(), 15, 0, 0, 0);
 
@@ -2191,6 +2261,7 @@ void cleanup(Init& init, RenderData& data) {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    init.disp.destroyDescriptorSetLayout(data.spheres_pipeline.descriptor_set_layout, nullptr);
     init.disp.destroyDescriptorSetLayout(data.skybox_pipeline.descriptor_set_layout, nullptr);
 
     init.disp.destroyDescriptorPool(data.descriptor_pool, nullptr);
@@ -2242,8 +2313,9 @@ int main() {
     if (0 != create_index_buffer(init, render_data)) return -1;
     if (0 != create_descriptor_pool(init, render_data)) return -1;
     if (0 != create_skybox_descriptor_set_layout(init, render_data)) return -1;
-    if (0 != create_spheres_graphics_pipeline(init, render_data)) return -1;
+    if (0 != create_spheres_descriptor_set_layout(init, render_data)) return -1;
     if (0 != create_skybox_graphics_pipeline(init, render_data)) return -1;
+    if (0 != create_spheres_graphics_pipeline(init, render_data)) return -1;
     if (0 != create_command_buffers(init, render_data)) return -1;
     if (0 != create_sync_objects(init, render_data)) return -1;
     if (0 != imgui_initialization(init, render_data)) return -1;

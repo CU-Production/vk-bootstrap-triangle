@@ -21,7 +21,7 @@ struct PushData
     [[vk::offset(80)]]
     float4 lightPositions[4];
 	float4 cameraPosition;
-    float4 albedo;
+    float4 albedo_maxPreFilterMips;
 #endif
 };
 
@@ -112,8 +112,8 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
     float3 lightColor = float3(24.0, 24.0, 24.0);
 
 	// Gold
-	float3 sphereRefAlbedo = pushData.albedo.xyz; // F0
-	float3 sphereDifAlbedo = pushData.albedo.xyz;
+	float3 Albedo = pushData.albedo_maxPreFilterMips.xyz; // F0
+    float maxMipLevel = pushData.albedo_maxPreFilterMips.w;
 
 	float3 wo = normalize(pushData.cameraPosition.xyz - fragInput.WorldPos.xyz);
 	
@@ -124,6 +124,7 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
 	float metallic = fragInput.Params.x;
 	float roughness = fragInput.Params.y;
 
+    // point light
 	float3 Lo = float3(0.0, 0.0, 0.0); // Output light values to the view direction.
 	for(int i = 0; i < 4; i++)
 	{
@@ -141,7 +142,7 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
         float G   = GeometrySmithDirectLight(worldNormal, wo, wi, roughness);
 
 		float3 F0 = float3(0.04, 0.04, 0.04);
-        F0        = lerp(F0, sphereRefAlbedo, float3(metallic, metallic, metallic));
+        F0        = lerp(F0, Albedo, float3(metallic, metallic, metallic));
         float3 F  = FresnelSchlick(max(dot(H, wo), 0.0), F0);
 
 		float3 NFG = NDF * F * G;
@@ -153,15 +154,42 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
 		float3 kD = float3(1.0, 1.0, 1.0) - F; // The amount of light goes into the material.
 		kD *= (1.0 - metallic);
 
-		Lo += (kD * (sphereDifAlbedo / 3.14159265359) + specular) * radiance * lightNormalCosTheta;
+		Lo += (kD * (Albedo / 3.14159265359) + specular) * radiance * lightNormalCosTheta;
 	}
 
-	float3 ambient = float3(0.0001, 0.0001, 0.0001) * sphereRefAlbedo;
-    float3 color = ambient + Lo;
+    // ibl
+    float3 IBLo = float3(0.0, 0.0, 0.0);
+    {
+        float3 V = normalize(fragInput.WorldPos.xyz);
+        float3 N = normalize(fragInput.Normal.xyz);
+        float NoV = saturate(dot(N, V));
+        float3 R = 2 * NoV * N - V;
+
+        float3 F0 = float3(0.04, 0.04, 0.04);
+        F0 = lerp(F0, Albedo, float3(metallic, metallic, metallic));
+
+        float3 diffuseIrradiance = i_diffuseCubeMapTexture.Sample(i_diffuseCubemapSamplerState, N).xyz;
+
+        float3 prefilterEnv = i_prefilterEnvCubeMapTexture.SampleLevel(i_prefilterEnvCubeMapSamplerState,
+                                                                       R, roughness * maxMipLevel).xyz;
+
+        float2 envBrdf = i_envBrdfTexture.Sample(i_envBrdfSamplerState, float2(NoV, roughness)).xy;
+
+        float3 Ks = fresnelSchlickRoughness(NoV, F0, roughness);
+        float3 Kd = float3(1.0, 1.0, 1.0) - Ks;
+        Kd *= (1.0 - metallic);
+
+        float3 diffuse = Kd * diffuseIrradiance * Albedo;
+        float3 specular = prefilterEnv * (Ks * envBrdf.x + envBrdf.y);
+
+        IBLo = diffuse + specular;
+    }
+
+    float3 color = IBLo + Lo;
 	
     // Gamma Correction
     // color = color / (color + float3(1.0, 1.0, 1.0));
-    color = pow(color, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));  
+    // color = pow(color, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));  
 
 	return float4(color, 1.0);
 }
