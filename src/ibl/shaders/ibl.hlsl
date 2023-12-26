@@ -22,7 +22,7 @@ struct PushData
     float4 lightPositions[4];
 	float4 cameraPosition;
     float4 albedo_maxPreFilterMips;
-    float4 params; // x: enable light, y: enable ibl
+    uint3  params; // x: enable light, y: enable ibl
 #endif
 };
 
@@ -110,89 +110,97 @@ VSOutput mainVS(
 
 float4 mainPS(VSOutput fragInput) : SV_TARGET
 {
-    float3 lightColor = float3(4.0, 4.0, 4.0);
+    float3 lightColor = float3(24.0, 24.0, 24.0);
 
 	// Gold
 	float3 Albedo = pushData.albedo_maxPreFilterMips.xyz; // F0
     float maxMipLevel = pushData.albedo_maxPreFilterMips.w;
 
-	float3 wo = normalize(pushData.cameraPosition.xyz - fragInput.WorldPos.xyz);
-	
-	float3 worldNormal = normalize(fragInput.Normal.xyz);
-
-	float viewNormalCosTheta = max(dot(worldNormal, wo), 0.0);
+	float3 V = normalize(pushData.cameraPosition.xyz -fragInput.WorldPos.xyz);
+    float3 N = normalize(fragInput.Normal.xyz);
+    float3 R = reflect(-V, N);
 
 	float metallic = fragInput.Params.x;
 	float roughness = fragInput.Params.y;
 
+    float3 F0 = float3(0.04, 0.04, 0.04);
+    F0        = lerp(F0, Albedo, float3(metallic, metallic, metallic));
+
+    uint enable_light = pushData.params.x;
+    uint enable_ibl_diffuse = pushData.params.y;
+    uint enable_ibl_specular = pushData.params.z;
+
     // point light
 	float3 Lo = float3(0.0, 0.0, 0.0); // Output light values to the view direction.
-	for(int i = 0; i < 4; i++)
-	{
-		float3 lightPos = pushData.lightPositions[i].xyz;
-		float3 wi       = normalize(lightPos - fragInput.WorldPos.xyz);
-		float3 H	    = normalize(wi + wo);
-		float distance  = length(lightPos - fragInput.WorldPos.xyz);
+    if (enable_light)
+    {
+    	for(int i = 0; i < 4; i++)
+        {
+            float3 lightPos = pushData.lightPositions[i].xyz;
+            float3 L        = normalize(lightPos - fragInput.WorldPos.xyz);
+            float3 H	    = normalize(V + L);
+            float distance  = length(lightPos - fragInput.WorldPos.xyz);
 
-		float  attenuation = 1.0 / (distance * distance);
-		float3 radiance    = lightColor * attenuation; 
+            float  attenuation = 1.0 / (distance * distance);
+            float3 radiance    = lightColor * attenuation; 
 
-		float lightNormalCosTheta = max(dot(worldNormal, wi), 0.0);
+            float lightNormalCosTheta = max(dot(N, L), 0.0);
+            float viewNormalCosTheta  = max(dot(N, V), 0.0);
 
-		float NDF = DistributionGGX(worldNormal, H, roughness);
-        float G   = GeometrySmithDirectLight(worldNormal, wo, wi, roughness);
+            float  NDF = DistributionGGX(N, H, roughness);
+            float  G   = GeometrySmithDirectLight(N, V, L, roughness);
+            float3 F   = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
-		float3 F0 = float3(0.04, 0.04, 0.04);
-        F0        = lerp(F0, Albedo, float3(metallic, metallic, metallic));
-        float3 F  = FresnelSchlick(max(dot(H, wo), 0.0), F0);
+            float3 NFG = NDF * F * G;
+            float denominator = 4.0 * viewNormalCosTheta * lightNormalCosTheta  + 0.0001;
+            float3 specular = NFG / denominator;
 
-		float3 NFG = NDF * F * G;
+            float3 kD = float3(1.0, 1.0, 1.0) - F; // The amount of light goes into the material.
+            kD *= (1.0 - metallic);
 
-		float denominator = 4.0 * viewNormalCosTheta * lightNormalCosTheta  + 0.0001;
-		
-		float3 specular = NFG / denominator;
-
-		float3 kD = float3(1.0, 1.0, 1.0) - F; // The amount of light goes into the material.
-		kD *= (1.0 - metallic);
-
-		Lo += (kD * (Albedo / 3.14159265359) + specular) * radiance * lightNormalCosTheta;
-	}
-    Lo *= pushData.params.x;
+            Lo += (kD * (Albedo / 3.14159265359) + specular) * radiance * lightNormalCosTheta;
+        }
+    }
 
     // ibl
     float3 IBLo = float3(0.0, 0.0, 0.0);
-    {
-        float3 V = normalize(fragInput.WorldPos.xyz);
-        float3 N = normalize(fragInput.Normal.xyz);
-        float NoV = saturate(dot(N, V));
-        float3 R = 2 * NoV * N - V;
 
-        float3 F0 = float3(0.04, 0.04, 0.04);
-        F0 = lerp(F0, Albedo, float3(metallic, metallic, metallic));
+    float NoV = max(dot(N, V), 0.0);
+
+    if (enable_ibl_diffuse)
+    {
+        float3 Ks = fresnelSchlickRoughness(NoV, F0, roughness);
+        float3 Kd = float3(1.0, 1.0, 1.0) - Ks;
+        Kd *= (1.0 - metallic);
 
         float3 diffuseIrradiance = i_diffuseCubeMapTexture.Sample(i_diffuseCubemapSamplerState, N).xyz;
+
+        float3 diffuse = Kd * diffuseIrradiance * Albedo;
+
+        IBLo += diffuse;
+    }
+
+    if (enable_ibl_specular)
+    {
+        float3 Ks = fresnelSchlickRoughness(NoV, F0, roughness);
 
         float3 prefilterEnv = i_prefilterEnvCubeMapTexture.SampleLevel(i_prefilterEnvCubeMapSamplerState,
                                                                        R, roughness * maxMipLevel).xyz;
 
         float2 envBrdf = i_envBrdfTexture.Sample(i_envBrdfSamplerState, float2(NoV, roughness)).xy;
 
-        float3 Ks = fresnelSchlickRoughness(NoV, F0, roughness);
-        float3 Kd = float3(1.0, 1.0, 1.0) - Ks;
-        Kd *= (1.0 - metallic);
-
-        float3 diffuse = Kd * diffuseIrradiance * Albedo;
         float3 specular = prefilterEnv * (Ks * envBrdf.x + envBrdf.y);
 
-        IBLo = diffuse + specular;
+        IBLo += specular;
     }
-    IBLo *= pushData.params.y;
 
     float3 color = IBLo + Lo;
 	
+    // HDR tonemapping
+    color = color / (color + (1.0).xxx);
+
     // Gamma Correction
-    // color = color / (color + float3(1.0, 1.0, 1.0));
-    // color = pow(color, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));  
+    color = pow(color, (1.0/2.2).xxx);
 
 	return float4(color, 1.0);
 }

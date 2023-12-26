@@ -26,4 +26,4 @@
 
 ## 7. ibl
 
-![ibl](screenshots/Snipaste_2023-12-26_14-19-16.png)
+![ibl](screenshots/Snipaste_2023-12-26_18-34-34.png)

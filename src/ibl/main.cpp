@@ -44,10 +44,10 @@ struct SpheresVertexShaderPushConstants {
 };
 
 struct SpheresPixelShaderPushConstants {
-    glm::vec4 lightPositions[4];
-    glm::vec4 cameraPosition;
-    glm::vec4 albedo_maxPreFilterMips;
-    glm::vec4 params;
+    glm::vec4  lightPositions[4];
+    glm::vec4  cameraPosition;
+    glm::vec4  albedo_maxPreFilterMips;
+    glm::uvec4 params;
 };
 
 struct SkyboxPixelShaderPushConstants {
@@ -124,7 +124,8 @@ struct RenderData {
         float custom_roughness = 0.0f;
         glm::vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
         bool enable_light = false;
-        bool enable_ibl = true;
+        bool enable_ibl_diffuse = true;
+        bool enable_ibl_specular = true;
     } imgui_state;
 
     struct {
@@ -1965,7 +1966,7 @@ int draw_frame(Init& init, RenderData& data) {
             constants.right = {0, 0, -1, 1};
             constants.viewportWidthHeight = {viewport.width, viewport.height};
             constants.near = 0.1f;
-            const float fov = 47.f * M_PI / 180.f;
+            const float fov = 70.f * M_PI / 180.f;
             const float aspect = 1700.f / 900.f;
             const float nearPlaneHeight = 2.f * constants.near * tanf(fov / 2.f);
             const float nearPlaneWidth  = aspect * nearPlaneHeight;
@@ -2028,7 +2029,7 @@ int draw_frame(Init& init, RenderData& data) {
 
             glm::vec3 cam_pos = { 0.f,0.f,0.f };
             glm::mat4 view = glm::lookAt( cam_pos, {15, 0, 0}, {0, 1, 0});
-            const float fov = 47.f;
+            const float fov = 70.f;
             float aspect = 1700.f / 900.f;
             glm::mat4 projection = glm::perspective(glm::radians(fov), aspect, 0.1f, 200.0f);
             projection[1][1] *= -1;
@@ -2049,8 +2050,9 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.cameraPosition = {cam_pos.x, cam_pos.y, cam_pos.z, 0.0f,};
             ps_constants.albedo_maxPreFilterMips = data.imgui_state.albedo;
             ps_constants.albedo_maxPreFilterMips.w = 8 - 1; // mip_count = 8, max mip level is 7
-            ps_constants.params.x = data.imgui_state.enable_light ? 1.0f : 0.0f;
-            ps_constants.params.y = data.imgui_state.enable_ibl ? 1.0f : 0.0f;
+            ps_constants.params.x = data.imgui_state.enable_light ? 1 : 0;
+            ps_constants.params.y = data.imgui_state.enable_ibl_diffuse ? 1 : 0;
+            ps_constants.params.z = data.imgui_state.enable_ibl_specular ? 1 : 0;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SpheresVertexShaderPushConstants), sizeof(SpheresPixelShaderPushConstants), &ps_constants);
 
@@ -2102,7 +2104,8 @@ int draw_frame(Init& init, RenderData& data) {
                 ImGui::SliderFloat("roughness", &data.imgui_state.custom_roughness, 0.0f, 1.0f);
                 ImGui::ColorEdit3("albedo", (float*)&data.imgui_state.albedo);
                 ImGui::Checkbox("enable light", &data.imgui_state.enable_light);
-                ImGui::Checkbox("enable ibl", &data.imgui_state.enable_ibl);
+                ImGui::Checkbox("enable ibl diffuse", &data.imgui_state.enable_ibl_diffuse);
+                ImGui::Checkbox("enable ibl specular", &data.imgui_state.enable_ibl_specular);
             }
             ImGui::End();
 
