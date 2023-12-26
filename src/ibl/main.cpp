@@ -158,7 +158,7 @@ struct RenderData {
         VmaAllocation        vma_allocation;
 
         VkDescriptorImageInfo descriptor_image_info;
-    } m_envBrdf_img;
+    } envBrdf_img;
 };
 
 GLFWwindow* create_window_glfw(const char* window_name = "", bool resize = true) {
@@ -1222,6 +1222,566 @@ int load_hdr_cubemap(Init& init, RenderData& data, const std::string& img_file_p
     return 0;
 }
 
+int load_diffuse_irradiance_cubemap(Init& init, RenderData& data, const std::string& img_file_path) {
+    int width, height, nrComponents;
+    void* img_data = stbi_loadf(img_file_path.c_str(), &width, &height, &nrComponents, 4);
+
+    VmaAllocationCreateInfo diffuse_irradiance_cubemap_vma_alloc_info{};
+    diffuse_irradiance_cubemap_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+    diffuse_irradiance_cubemap_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+    VkImageCreateInfo diffuse_irradiance_cubemap_img_info{};
+    diffuse_irradiance_cubemap_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    diffuse_irradiance_cubemap_img_info.imageType = VK_IMAGE_TYPE_2D;
+    diffuse_irradiance_cubemap_img_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    diffuse_irradiance_cubemap_img_info.extent.width = width;
+    diffuse_irradiance_cubemap_img_info.extent.height = height / 6;
+    diffuse_irradiance_cubemap_img_info.extent.depth = 1;
+    diffuse_irradiance_cubemap_img_info.mipLevels = 1;
+    diffuse_irradiance_cubemap_img_info.arrayLayers = 6;
+    diffuse_irradiance_cubemap_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    // diffuse_irradiance_cubemap_img_info.tiling = VK_IMAGE_TILING_LINEAR;
+    diffuse_irradiance_cubemap_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    diffuse_irradiance_cubemap_img_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    diffuse_irradiance_cubemap_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (vmaCreateImage(init.allocator, &diffuse_irradiance_cubemap_img_info, &diffuse_irradiance_cubemap_vma_alloc_info, &data.diffuse_irradiance_cubemap.image, &data.diffuse_irradiance_cubemap.vma_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create diffuse_irradiance_cubemap.image\n";
+        return -1;
+    }
+
+    // staging buffer copy
+    {
+        const size_t buffer_size = 4 * sizeof(float) * width * height;
+        VkBuffer staging_buffer;
+        VmaAllocation staging_buffer_allocation;
+        VmaAllocationInfo vma_alloc_info;
+
+        VkBufferCreateInfo staging_buffer_alloc_info{};
+        staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        staging_buffer_alloc_info.size = buffer_size;;
+        staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+        VmaAllocationCreateInfo staging_alloc_info{};
+        staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+        staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &staging_buffer, &staging_buffer_allocation, &vma_alloc_info) != VK_SUCCESS) {
+            std::cout << "failed to staging buffer\n";
+            return -1; // failed to create vertex buffer
+        }
+
+        /* copy data to staging buffer*/
+        memcpy(vma_alloc_info.pMappedData, img_data, vma_alloc_info.size);
+
+        VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+        cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdbuffer_alloc_info.commandPool = data.command_pool;
+        cmdbuffer_alloc_info.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+        // Transform the layout of the image to copy source
+        VkImageMemoryBarrier undefToDstBarrier{};
+        undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        undefToDstBarrier.image = data.diffuse_irradiance_cubemap.image;
+        undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        undefToDstBarrier.subresourceRange.baseMipLevel = 0;
+        undefToDstBarrier.subresourceRange.levelCount = 1;
+        undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+        undefToDstBarrier.subresourceRange.layerCount = 6;
+        undefToDstBarrier.srcAccessMask = 0;
+        undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+        init.disp.cmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &undefToDstBarrier);
+
+        VkBufferImageCopy copyBufferToImage{};
+        copyBufferToImage.bufferRowLength = width;
+        copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyBufferToImage.imageSubresource.mipLevel = 0;
+        copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+        copyBufferToImage.imageSubresource.layerCount = 6;
+        copyBufferToImage.imageExtent.width = width;
+        copyBufferToImage.imageExtent.height = height / 6;
+        copyBufferToImage.imageExtent.depth = 1;
+        init.disp.cmdCopyBufferToImage(commandBuffer, staging_buffer, data.diffuse_irradiance_cubemap.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+        // Transform the layout of the image to shader access resource
+        VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+        dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        dstToShaderReadOptBarrier.image = data.diffuse_irradiance_cubemap.image;
+        dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = 0;
+        dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+        dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+        dstToShaderReadOptBarrier.subresourceRange.layerCount = 6;
+        dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+        dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        init.disp.cmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &dstToShaderReadOptBarrier);
+
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &commandBuffer;
+
+        init.disp.endCommandBuffer(commandBuffer);
+
+        init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+        init.disp.queueWaitIdle(data.graphics_queue);
+
+        init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+        vmaDestroyBuffer(init.allocator, staging_buffer, staging_buffer_allocation);
+    }
+
+    VkImageViewCreateInfo image_view_info{};
+    image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    image_view_info.image = data.diffuse_irradiance_cubemap.image;
+    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    image_view_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_view_info.subresourceRange.levelCount = 1;
+    image_view_info.subresourceRange.layerCount = 6;
+
+    if (init.disp.createImageView(&image_view_info, nullptr, &data.diffuse_irradiance_cubemap.image_view) != VK_SUCCESS) {
+        std::cout << "failed to create diffuse_irradiance_cubemap.image_view\n";
+        return -1;
+    }
+
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.minLod = -1000;
+    sampler_info.maxLod = 1000;
+    sampler_info.maxAnisotropy = 1.0f;
+
+    if (init.disp.createSampler(&sampler_info, nullptr, &data.diffuse_irradiance_cubemap.sampler) != VK_SUCCESS) {
+        std::cout << "failed to create diffuse_irradiance_cubemap.sampler\n";
+        return -1;
+    }
+
+    free(img_data);
+
+    data.diffuse_irradiance_cubemap.descriptor_image_info.sampler = data.diffuse_irradiance_cubemap.sampler;
+    data.diffuse_irradiance_cubemap.descriptor_image_info.imageView = data.diffuse_irradiance_cubemap.image_view;
+    data.diffuse_irradiance_cubemap.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    return 0;
+}
+
+int load_prefilter_environment_cubemap(Init& init, RenderData& data, const std::string& img_file_base_path) {
+    const int mip_count = 8;
+
+    struct ImgDataWH {
+        void* data;
+        uint32_t width;
+        uint32_t height;
+
+        VkBuffer staging_buffer;
+        VmaAllocation staging_buffer_allocation;
+        VmaAllocationInfo vma_alloc_info;
+    };
+
+    std::vector<ImgDataWH> img_infos;
+    img_infos.resize(mip_count);
+
+    for (uint32_t i = 0; i < mip_count; i++) {
+        int width, height, nrComponents;
+        std::string img_file_path = img_file_base_path + "prefilterMip" + std::to_string(i) + ".hdr";
+        img_infos[i].data = stbi_loadf(img_file_path.c_str(), &width, &height, &nrComponents, 4);
+        img_infos[i].width = width;
+        img_infos[i].height = height;
+    }
+
+    VmaAllocationCreateInfo prefilter_environment_cubemap_vma_alloc_info{};
+    prefilter_environment_cubemap_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+    prefilter_environment_cubemap_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+    VkImageCreateInfo prefilter_environment_cubemap_img_info{};
+    prefilter_environment_cubemap_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    prefilter_environment_cubemap_img_info.imageType = VK_IMAGE_TYPE_2D;
+    prefilter_environment_cubemap_img_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    prefilter_environment_cubemap_img_info.extent.width = img_infos[0].width;
+    prefilter_environment_cubemap_img_info.extent.height = img_infos[0].height / 6;
+    prefilter_environment_cubemap_img_info.extent.depth = 1;
+    prefilter_environment_cubemap_img_info.mipLevels = mip_count;
+    prefilter_environment_cubemap_img_info.arrayLayers = 6;
+    prefilter_environment_cubemap_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    // prefilter_environment_cubemap_img_info.tiling = VK_IMAGE_TILING_LINEAR;
+    prefilter_environment_cubemap_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    prefilter_environment_cubemap_img_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    prefilter_environment_cubemap_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (vmaCreateImage(init.allocator, &prefilter_environment_cubemap_img_info, &prefilter_environment_cubemap_vma_alloc_info, &data.prefilter_env_cubemap.image, &data.prefilter_env_cubemap.vma_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create prefilter_env_cubemap.image\n";
+        return -1;
+    }
+
+    // staging buffer copy
+    {
+        VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+        cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdbuffer_alloc_info.commandPool = data.command_pool;
+        cmdbuffer_alloc_info.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+
+
+        // copy mips
+        {
+            for (uint32_t i = 0; i < mip_count; i++) {
+                {
+                    // Transform the layout of the image to copy source
+                    VkImageMemoryBarrier undefToDstBarrier{};
+                    undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    undefToDstBarrier.image = data.prefilter_env_cubemap.image;
+                    undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    undefToDstBarrier.subresourceRange.baseMipLevel = i;
+                    undefToDstBarrier.subresourceRange.levelCount = 1;
+                    undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+                    undefToDstBarrier.subresourceRange.layerCount = 6;
+                    undefToDstBarrier.srcAccessMask = 0;
+                    undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &undefToDstBarrier);
+                }
+                const size_t buffer_size = 4 * sizeof(float) * img_infos[i].width * img_infos[i].height;
+
+                VkBufferCreateInfo staging_buffer_alloc_info{};
+                staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                staging_buffer_alloc_info.size = buffer_size;;
+                staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+                VmaAllocationCreateInfo staging_alloc_info{};
+                staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+                staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+                if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &img_infos[i].staging_buffer, &img_infos[i].staging_buffer_allocation, &img_infos[i].vma_alloc_info) != VK_SUCCESS) {
+                    std::cout << "failed to staging buffer\n";
+                    return -1; // failed to create vertex buffer
+                }
+
+                /* copy data to staging buffer*/
+                memcpy(img_infos[i].vma_alloc_info.pMappedData, img_infos[i].data, img_infos[i].vma_alloc_info.size);
+
+                VkBufferImageCopy copyBufferToImage{};
+                copyBufferToImage.bufferRowLength = img_infos[i].width;
+                copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                copyBufferToImage.imageSubresource.mipLevel = i;
+                copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+                copyBufferToImage.imageSubresource.layerCount = 6;
+                copyBufferToImage.imageExtent.width = img_infos[i].width;
+                copyBufferToImage.imageExtent.height = img_infos[i].height / 6;
+                copyBufferToImage.imageExtent.depth = 1;
+                init.disp.cmdCopyBufferToImage(commandBuffer, img_infos[i].staging_buffer, data.prefilter_env_cubemap.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+                {
+                    // Transform the layout of the image to shader access resource
+                    VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+                    dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    dstToShaderReadOptBarrier.image = data.prefilter_env_cubemap.image;
+                    dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = i;
+                    dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+                    dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.layerCount = 6;
+                    dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+                    dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &dstToShaderReadOptBarrier);
+                }
+            }
+        }
+
+
+
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &commandBuffer;
+
+        init.disp.endCommandBuffer(commandBuffer);
+
+        init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+        init.disp.queueWaitIdle(data.graphics_queue);
+
+        init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+    }
+
+    VkImageViewCreateInfo image_view_info{};
+    image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    image_view_info.image = data.prefilter_env_cubemap.image;
+    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+    image_view_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_view_info.subresourceRange.levelCount = mip_count;
+    image_view_info.subresourceRange.layerCount = 6;
+
+    if (init.disp.createImageView(&image_view_info, nullptr, &data.prefilter_env_cubemap.image_view) != VK_SUCCESS) {
+        std::cout << "failed to create prefilter_env_cubemap.image_view\n";
+        return -1;
+    }
+
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.minLod = -1000;
+    sampler_info.maxLod = 1000;
+    sampler_info.maxAnisotropy = 1.0f;
+
+    if (init.disp.createSampler(&sampler_info, nullptr, &data.prefilter_env_cubemap.sampler) != VK_SUCCESS) {
+        std::cout << "failed to create prefilter_env_cubemap.sampler\n";
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < mip_count; i++) {
+        free(img_infos[i].data);
+        vmaDestroyBuffer(init.allocator, img_infos[i].staging_buffer, img_infos[i].staging_buffer_allocation);
+    }
+
+    data.prefilter_env_cubemap.descriptor_image_info.sampler = data.prefilter_env_cubemap.sampler;
+    data.prefilter_env_cubemap.descriptor_image_info.imageView = data.prefilter_env_cubemap.image_view;
+    data.prefilter_env_cubemap.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    return 0;
+}
+
+int load_environment_brdf_map(Init& init, RenderData& data, const std::string& img_file_path) {
+    int width, height, nrComponents;
+    void* img_data = stbi_loadf(img_file_path.c_str(), &width, &height, &nrComponents, 4);
+
+    VmaAllocationCreateInfo envBrdf_img_vma_alloc_info{};
+    envBrdf_img_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+    envBrdf_img_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+    VkImageCreateInfo envBrdf_img_img_info{};
+    envBrdf_img_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    envBrdf_img_img_info.imageType = VK_IMAGE_TYPE_2D;
+    envBrdf_img_img_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    envBrdf_img_img_info.extent.width = width;
+    envBrdf_img_img_info.extent.height = height;
+    envBrdf_img_img_info.extent.depth = 1;
+    envBrdf_img_img_info.mipLevels = 1;
+    envBrdf_img_img_info.arrayLayers = 1;
+    envBrdf_img_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    // envBrdf_img_img_info.tiling = VK_IMAGE_TILING_LINEAR;
+    envBrdf_img_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    envBrdf_img_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (vmaCreateImage(init.allocator, &envBrdf_img_img_info, &envBrdf_img_vma_alloc_info, &data.envBrdf_img.image, &data.envBrdf_img.vma_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create envBrdf_img.image\n";
+        return -1;
+    }
+
+    // staging buffer copy
+    {
+        const size_t buffer_size = 4 * sizeof(float) * width * height;
+        VkBuffer staging_buffer;
+        VmaAllocation staging_buffer_allocation;
+        VmaAllocationInfo vma_alloc_info;
+
+        VkBufferCreateInfo staging_buffer_alloc_info{};
+        staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        staging_buffer_alloc_info.size = buffer_size;;
+        staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+        VmaAllocationCreateInfo staging_alloc_info{};
+        staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+        staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &staging_buffer, &staging_buffer_allocation, &vma_alloc_info) != VK_SUCCESS) {
+            std::cout << "failed to staging buffer\n";
+            return -1; // failed to create vertex buffer
+        }
+
+        /* copy data to staging buffer*/
+        memcpy(vma_alloc_info.pMappedData, img_data, vma_alloc_info.size);
+
+        VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+        cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdbuffer_alloc_info.commandPool = data.command_pool;
+        cmdbuffer_alloc_info.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+        // Transform the layout of the image to copy source
+        VkImageMemoryBarrier undefToDstBarrier{};
+        undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        undefToDstBarrier.image = data.envBrdf_img.image;
+        undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        undefToDstBarrier.subresourceRange.baseMipLevel = 0;
+        undefToDstBarrier.subresourceRange.levelCount = 1;
+        undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+        undefToDstBarrier.subresourceRange.layerCount = 1;
+        undefToDstBarrier.srcAccessMask = 0;
+        undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+        init.disp.cmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &undefToDstBarrier);
+
+        VkBufferImageCopy copyBufferToImage{};
+        copyBufferToImage.bufferRowLength = width;
+        copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyBufferToImage.imageSubresource.mipLevel = 0;
+        copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+        copyBufferToImage.imageSubresource.layerCount = 1;
+        copyBufferToImage.imageExtent.width = width;
+        copyBufferToImage.imageExtent.height = height;
+        copyBufferToImage.imageExtent.depth = 1;
+        init.disp.cmdCopyBufferToImage(commandBuffer, staging_buffer, data.envBrdf_img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+        // Transform the layout of the image to shader access resource
+        VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+        dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        dstToShaderReadOptBarrier.image = data.envBrdf_img.image;
+        dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = 0;
+        dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+        dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+        dstToShaderReadOptBarrier.subresourceRange.layerCount = 1;
+        dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+        dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        init.disp.cmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &dstToShaderReadOptBarrier);
+
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &commandBuffer;
+
+        init.disp.endCommandBuffer(commandBuffer);
+
+        init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+        init.disp.queueWaitIdle(data.graphics_queue);
+
+        init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+        vmaDestroyBuffer(init.allocator, staging_buffer, staging_buffer_allocation);
+    }
+
+    VkImageViewCreateInfo image_view_info{};
+    image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    image_view_info.image = data.envBrdf_img.image;
+    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    image_view_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_view_info.subresourceRange.levelCount = 1;
+    image_view_info.subresourceRange.layerCount = 1;
+
+    if (init.disp.createImageView(&image_view_info, nullptr, &data.envBrdf_img.image_view) != VK_SUCCESS) {
+        std::cout << "failed to create envBrdf_img.image_view\n";
+        return -1;
+    }
+
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.minLod = -1000;
+    sampler_info.maxLod = 1000;
+    sampler_info.maxAnisotropy = 1.0f;
+
+    if (init.disp.createSampler(&sampler_info, nullptr, &data.envBrdf_img.sampler) != VK_SUCCESS) {
+        std::cout << "failed to create envBrdf_img.sampler\n";
+        return -1;
+    }
+
+    free(img_data);
+
+    data.envBrdf_img.descriptor_image_info.sampler = data.envBrdf_img.sampler;
+    data.envBrdf_img.descriptor_image_info.imageView = data.envBrdf_img.image_view;
+    data.envBrdf_img.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    return 0;
+}
+
 int recreate_swapchain(Init& init, RenderData& data) {
     init.disp.deviceWaitIdle();
 
@@ -1602,6 +2162,24 @@ int draw_frame(Init& init, RenderData& data) {
 }
 
 void cleanup(Init& init, RenderData& data) {
+    //envBrdf_img
+    {
+        vmaDestroyImage(init.allocator, data.envBrdf_img.image, data.envBrdf_img.vma_allocation);
+        init.disp.destroyImageView(data.envBrdf_img.image_view, nullptr);
+        init.disp.destroySampler(data.envBrdf_img.sampler, nullptr);
+    }
+    //prefilter_env_cubemap
+    {
+        vmaDestroyImage(init.allocator, data.prefilter_env_cubemap.image, data.prefilter_env_cubemap.vma_allocation);
+        init.disp.destroyImageView(data.prefilter_env_cubemap.image_view, nullptr);
+        init.disp.destroySampler(data.prefilter_env_cubemap.sampler, nullptr);
+    }
+    //diffuse_irradiance_cubemap
+    {
+        vmaDestroyImage(init.allocator, data.diffuse_irradiance_cubemap.image, data.diffuse_irradiance_cubemap.vma_allocation);
+        init.disp.destroyImageView(data.diffuse_irradiance_cubemap.image_view, nullptr);
+        init.disp.destroySampler(data.diffuse_irradiance_cubemap.sampler, nullptr);
+    }
     //hdr_cubemap
     {
         vmaDestroyImage(init.allocator, data.hdr_cubemap.image, data.hdr_cubemap.vma_allocation);
@@ -1670,6 +2248,9 @@ int main() {
     if (0 != create_sync_objects(init, render_data)) return -1;
     if (0 != imgui_initialization(init, render_data)) return -1;
     if (0 != load_hdr_cubemap(init, render_data, "data/background_cubemap.hdr")) return -1;
+    if (0 != load_diffuse_irradiance_cubemap(init, render_data, "data/diffuse_irradiance_cubemap.hdr")) return -1;
+    if (0 != load_prefilter_environment_cubemap(init, render_data, "data/prefilterEnvMaps/")) return -1;
+    if (0 != load_environment_brdf_map(init, render_data, "data/envBrdf.hdr")) return -1;
 
     while (!glfwWindowShouldClose(init.window)) {
         glfwPollEvents();
