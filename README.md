@@ -23,3 +23,7 @@
 ## 6. pbr
 
 ![pbr](screenshots/Snipaste_2023-12-24_21-13-41.png)
+
+## 7. ibl
+
+![ibl](screenshots/Snipaste_2023-12-26_14-19-16.png)

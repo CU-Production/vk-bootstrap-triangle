@@ -47,6 +47,7 @@ struct SpheresPixelShaderPushConstants {
     glm::vec4 lightPositions[4];
     glm::vec4 cameraPosition;
     glm::vec4 albedo_maxPreFilterMips;
+    glm::vec4 params;
 };
 
 struct SkyboxPixelShaderPushConstants {
@@ -122,6 +123,8 @@ struct RenderData {
         float custom_metallic = 0.0f;
         float custom_roughness = 0.0f;
         glm::vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
+        bool enable_light = false;
+        bool enable_ibl = true;
     } imgui_state;
 
     struct {
@@ -2046,10 +2049,10 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.cameraPosition = {cam_pos.x, cam_pos.y, cam_pos.z, 0.0f,};
             ps_constants.albedo_maxPreFilterMips = data.imgui_state.albedo;
             ps_constants.albedo_maxPreFilterMips.w = 8 - 1; // mip_count = 8, max mip level is 7
+            ps_constants.params.x = data.imgui_state.enable_light ? 1.0f : 0.0f;
+            ps_constants.params.y = data.imgui_state.enable_ibl ? 1.0f : 0.0f;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SpheresVertexShaderPushConstants), sizeof(SpheresPixelShaderPushConstants), &ps_constants);
-
-            std::vector<VkWriteDescriptorSet> write_descriptor_sets{};
 
             VkWriteDescriptorSet diffuseDesSet{};
             diffuseDesSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2057,7 +2060,6 @@ int draw_frame(Init& init, RenderData& data) {
             diffuseDesSet.dstBinding = 2;
             diffuseDesSet.descriptorCount = 1;
             diffuseDesSet.pImageInfo = &data.diffuse_irradiance_cubemap.descriptor_image_info;
-            write_descriptor_sets.push_back(diffuseDesSet);
 
             VkWriteDescriptorSet prefilterEnvDesSet{};
             prefilterEnvDesSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2065,21 +2067,17 @@ int draw_frame(Init& init, RenderData& data) {
             prefilterEnvDesSet.dstBinding = 3;
             prefilterEnvDesSet.descriptorCount = 1;
             prefilterEnvDesSet.pImageInfo = &data.prefilter_env_cubemap.descriptor_image_info;
-            write_descriptor_sets.push_back(prefilterEnvDesSet);
 
             VkWriteDescriptorSet envBrdfDesSet{};
             envBrdfDesSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             envBrdfDesSet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            envBrdfDesSet.dstBinding = 1;
+            envBrdfDesSet.dstBinding = 4;
             envBrdfDesSet.descriptorCount = 1;
             envBrdfDesSet.pImageInfo = &data.envBrdf_img.descriptor_image_info;
-            write_descriptor_sets.push_back(envBrdfDesSet);
 
-            // init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 3, write_descriptor_sets.data());
-            init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &diffuseDesSet);
-            init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &prefilterEnvDesSet);
-            // FIXME: crash here
-            //init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &envBrdfDesSet);
+            std::array<VkWriteDescriptorSet, 3> write_descriptor_sets{diffuseDesSet, prefilterEnvDesSet, envBrdfDesSet};
+
+            init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 3, write_descriptor_sets.data());
 
             init.disp.cmdDrawIndexed(data.command_buffers[i], data.sphere_model.indices.size(), 15, 0, 0, 0);
 
@@ -2103,6 +2101,8 @@ int draw_frame(Init& init, RenderData& data) {
                 ImGui::SliderFloat("metallic", &data.imgui_state.custom_metallic, 0.0f, 1.0f);
                 ImGui::SliderFloat("roughness", &data.imgui_state.custom_roughness, 0.0f, 1.0f);
                 ImGui::ColorEdit3("albedo", (float*)&data.imgui_state.albedo);
+                ImGui::Checkbox("enable light", &data.imgui_state.enable_light);
+                ImGui::Checkbox("enable ibl", &data.imgui_state.enable_ibl);
             }
             ImGui::End();
 

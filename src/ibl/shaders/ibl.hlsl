@@ -22,6 +22,7 @@ struct PushData
     float4 lightPositions[4];
 	float4 cameraPosition;
     float4 albedo_maxPreFilterMips;
+    float4 params; // x: enable light, y: enable ibl
 #endif
 };
 
@@ -109,7 +110,7 @@ VSOutput mainVS(
 
 float4 mainPS(VSOutput fragInput) : SV_TARGET
 {
-    float3 lightColor = float3(24.0, 24.0, 24.0);
+    float3 lightColor = float3(4.0, 4.0, 4.0);
 
 	// Gold
 	float3 Albedo = pushData.albedo_maxPreFilterMips.xyz; // F0
@@ -156,6 +157,7 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
 
 		Lo += (kD * (Albedo / 3.14159265359) + specular) * radiance * lightNormalCosTheta;
 	}
+    Lo *= pushData.params.x;
 
     // ibl
     float3 IBLo = float3(0.0, 0.0, 0.0);
@@ -184,6 +186,7 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
 
         IBLo = diffuse + specular;
     }
+    IBLo *= pushData.params.y;
 
     float3 color = IBLo + Lo;
 	
