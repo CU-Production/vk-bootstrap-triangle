@@ -10,8 +10,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-#include <glm/gtx/transform.hpp>
+#include <HandmadeMath.h>
 
 #define VMA_IMPLEMENTATION
 #define VMA_VULKAN_VERSION 1003000 // Vulkan 1.3
@@ -34,28 +33,28 @@
 #define M_PI       3.14159265358979323846   // pi
 
 struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
+    HMM_Vec3 position;
+    HMM_Vec3 normal;
 };
 
 struct SpheresVertexShaderPushConstants {
-    glm::mat4 vp_matrix;
-    glm::vec4 cumtom_param;
+    HMM_Mat4 vp_matrix;
+    HMM_Vec4 cumtom_param;
 };
 
 struct SpheresPixelShaderPushConstants {
-    glm::vec4  lightPositions[4];
-    glm::vec4  cameraPosition;
-    glm::vec4  albedo_maxPreFilterMips;
-    glm::uvec4 params;
+    HMM_Vec4  lightPositions[4];
+    HMM_Vec4  cameraPosition;
+    HMM_Vec4  albedo_maxPreFilterMips;
+    uint32_t params[4];
 };
 
 struct SkyboxPixelShaderPushConstants {
-    glm::vec4 view;
-    glm::vec4 right;
-    glm::vec4 up;
-    glm::vec2 viewportWidthHeight;
-    glm::vec2 nearWidthHeight; // Near plane's width and height in the world.
+    HMM_Vec4 view;
+    HMM_Vec4 right;
+    HMM_Vec4 up;
+    HMM_Vec2 viewportWidthHeight;
+    HMM_Vec2 nearWidthHeight; // Near plane's width and height in the world.
     float     near; // Pack it with 'up'.
 };
 
@@ -122,7 +121,7 @@ struct RenderData {
         ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
         float custom_metallic = 0.0f;
         float custom_roughness = 0.0f;
-        glm::vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
+        HMM_Vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
         bool enable_light = false;
         bool enable_ibl_diffuse = true;
         bool enable_ibl_specular = true;
@@ -2027,18 +2026,18 @@ int draw_frame(Init& init, RenderData& data) {
             init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
             init.disp.cmdBindIndexBuffer(data.command_buffers[i], data.sphere_model.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-            glm::vec3 cam_pos = { 0.f,0.f,0.f };
-            glm::mat4 view = glm::lookAt( cam_pos, {15, 0, 0}, {0, 1, 0});
+            HMM_Vec3 cam_pos = { 0.f,0.f,0.f };
+            HMM_Mat4 view = HMM_LookAt_RH( cam_pos, {15, 0, 0}, {0, 1, 0});
             const float fov = 70.f;
             float aspect = 1700.f / 900.f;
-            glm::mat4 projection = glm::perspective(glm::radians(fov), aspect, 0.1f, 200.0f);
+            HMM_Mat4 projection = HMM_Perspective_RH_NO(fov * HMM_DegToRad, aspect, 0.1f, 200.0f);
             projection[1][1] *= -1;
-            glm::mat4 mesh_matrix = projection * view;
+            HMM_Mat4 mesh_matrix = projection * view;
 
             SpheresVertexShaderPushConstants vs_constants{};
             vs_constants.vp_matrix = mesh_matrix;
-            vs_constants.cumtom_param.x = data.imgui_state.custom_metallic;
-            vs_constants.cumtom_param.y = data.imgui_state.custom_roughness;
+            vs_constants.cumtom_param.X = data.imgui_state.custom_metallic;
+            vs_constants.cumtom_param.Y = data.imgui_state.custom_roughness;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SpheresVertexShaderPushConstants), &vs_constants);
 
@@ -2047,12 +2046,12 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.lightPositions[1] = {10.f,  3.f,  8.f, 0.0f,};
             ps_constants.lightPositions[2] = {10.f, -3.f, -8.f, 0.0f,};
             ps_constants.lightPositions[3] = {10.f, -3.f,  8.f, 0.0f,};
-            ps_constants.cameraPosition = {cam_pos.x, cam_pos.y, cam_pos.z, 0.0f,};
+            ps_constants.cameraPosition = {cam_pos.X, cam_pos.Y, cam_pos.Z, 0.0f,};
             ps_constants.albedo_maxPreFilterMips = data.imgui_state.albedo;
-            ps_constants.albedo_maxPreFilterMips.w = 8 - 1; // mip_count = 8, max mip level is 7
-            ps_constants.params.x = data.imgui_state.enable_light ? 1 : 0;
-            ps_constants.params.y = data.imgui_state.enable_ibl_diffuse ? 1 : 0;
-            ps_constants.params.z = data.imgui_state.enable_ibl_specular ? 1 : 0;
+            ps_constants.albedo_maxPreFilterMips.W = 8 - 1; // mip_count = 8, max mip level is 7
+            ps_constants.params[0] = data.imgui_state.enable_light ? 1 : 0;
+            ps_constants.params[1] = data.imgui_state.enable_ibl_diffuse ? 1 : 0;
+            ps_constants.params[2] = data.imgui_state.enable_ibl_specular ? 1 : 0;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SpheresVertexShaderPushConstants), sizeof(SpheresPixelShaderPushConstants), &ps_constants);
 

@@ -10,8 +10,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-#include <glm/gtx/transform.hpp>
+#include <HandmadeMath.h>
 
 #define VMA_IMPLEMENTATION
 #define VMA_VULKAN_VERSION 1003000 // Vulkan 1.3
@@ -29,19 +28,19 @@
 #include "tiny_obj_loader.h"
 
 struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
+    HMM_Vec3 position;
+    HMM_Vec3 normal;
 };
 
 struct VertexShaderPushConstants {
-    glm::mat4 vp_matrix;
-    glm::vec4 cumtom_param;
+    HMM_Mat4 vp_matrix;
+    HMM_Vec4 cumtom_param;
 };
 
 struct PixelShaderPushConstants {
-    glm::vec4 lightPositions[4];
-    glm::vec4 cameraPosition;
-    glm::vec4 albedo;
+    HMM_Vec4 lightPositions[4];
+    HMM_Vec4 cameraPosition;
+    HMM_Vec4 albedo;
 };
 
 struct Init {
@@ -96,7 +95,7 @@ struct RenderData {
         ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
         float custom_metallic = 0.0f;
         float custom_roughness = 0.0f;
-        glm::vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
+        HMM_Vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
     } imgui_state;
 };
 
@@ -949,16 +948,16 @@ int draw_frame(Init& init, RenderData& data) {
             init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
             init.disp.cmdBindIndexBuffer(data.command_buffers[i], data.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-            glm::vec3 cam_pos = { 0.f,0.f,0.f };
-            glm::mat4 view = glm::lookAt( cam_pos, {15, 0, 0}, {0, 1, 0});
-            glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
+            HMM_Vec3 cam_pos = { 0.f,0.f,0.f };
+            HMM_Mat4 view = HMM_LookAt_RH( cam_pos, {15, 0, 0}, {0, 1, 0});
+            HMM_Mat4 projection = HMM_Perspective_RH_NO(70.f * HMM_DegToRad, 1700.f / 900.f, 0.1f, 200.0f);
             projection[1][1] *= -1;
-            glm::mat4 mesh_matrix = projection * view;
+            HMM_Mat4 mesh_matrix = projection * view;
 
             VertexShaderPushConstants vs_constants{};
             vs_constants.vp_matrix = mesh_matrix;
-            vs_constants.cumtom_param.x = data.imgui_state.custom_metallic;
-            vs_constants.cumtom_param.y = data.imgui_state.custom_roughness;
+            vs_constants.cumtom_param.X = data.imgui_state.custom_metallic;
+            vs_constants.cumtom_param.Y = data.imgui_state.custom_roughness;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VertexShaderPushConstants), &vs_constants);
 
@@ -967,7 +966,7 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.lightPositions[1] = {10.f,  3.f,  8.f, 0.0f,};
             ps_constants.lightPositions[2] = {10.f, -3.f, -8.f, 0.0f,};
             ps_constants.lightPositions[3] = {10.f, -3.f,  8.f, 0.0f,};
-            ps_constants.cameraPosition = {cam_pos.x, cam_pos.y, cam_pos.z, 0.0f,};
+            ps_constants.cameraPosition = {cam_pos.X, cam_pos.Y, cam_pos.Z, 0.0f,};
             ps_constants.albedo = data.imgui_state.albedo;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(VertexShaderPushConstants), sizeof(PixelShaderPushConstants), &ps_constants);

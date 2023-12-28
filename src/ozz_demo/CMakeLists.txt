@@ -5,7 +5,7 @@ add_executable(${APP_NAME}
         ../../3rd_party/vk-bootstrap/VkBootstrap.cpp
         ../../3rd_party/imgui/backends/imgui_impl_vulkan.cpp
         ../../3rd_party/imgui/backends/imgui_impl_glfw.cpp)
-target_link_libraries(${APP_NAME} PRIVATE glfw glm vma vkb imgui ozzanim ${CMAKE_DL_LIBS})
+target_link_libraries(${APP_NAME} PRIVATE glfw hmm vma vkb imgui ozzanim ${CMAKE_DL_LIBS})
 
 # shader compile
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")

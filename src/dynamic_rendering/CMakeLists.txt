@@ -1,7 +1,7 @@
 set(APP_NAME dynamic_rendering)
 
 add_executable(${APP_NAME} main.cpp ../../3rd_party/vk-bootstrap/VkBootstrap.cpp)
-target_link_libraries(${APP_NAME} PRIVATE glfw glm vma vkb ${CMAKE_DL_LIBS})
+target_link_libraries(${APP_NAME} PRIVATE glfw hmm vma vkb ${CMAKE_DL_LIBS})
 
 # shader compile
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "AMD64")

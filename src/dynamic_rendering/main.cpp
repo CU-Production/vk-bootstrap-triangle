@@ -9,8 +9,7 @@
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-#include <glm/gtx/transform.hpp>
+#include <HandmadeMath.h>
 
 #define VMA_IMPLEMENTATION
 #define VMA_VULKAN_VERSION 1003000 // Vulkan 1.3
@@ -21,8 +20,8 @@
 #include <VkBootstrap.h>
 
 struct Vertex {
-    glm::vec3 pos;
-    glm::vec3 color;
+    HMM_Vec3 pos;
+    HMM_Vec3 color;
 };
 
 const std::vector<Vertex> vertices = {
@@ -32,8 +31,8 @@ const std::vector<Vertex> vertices = {
 };
 
 struct VertexShaderPushConstants {
-    glm::vec4 data;
-    glm::mat4 mvp_matrix;
+    HMM_Vec4 data;
+    HMM_Mat4 mvp_matrix;
 };
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
@@ -647,12 +646,12 @@ int draw_frame(Init& init, RenderData& data) {
         VkDeviceSize offsets[] = {0};
         init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
 
-        glm::vec3 cam_pos = { 0.f,0.f,-2.f };
-        glm::mat4 view = glm::translate(glm::mat4(1.f), cam_pos);
-        glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
+        HMM_Vec3 cam_pos = { 0.f,0.f,-2.f };
+        HMM_Mat4 view = HMM_Translate(cam_pos);
+        HMM_Mat4 projection = HMM_Perspective_RH_ZO(70.f * HMM_DegToRad, 1700.f / 900.f, 0.1f, 200.0f);
         projection[1][1] *= -1;
-        glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(data.number_of_frame * 0.1f), glm::vec3(0, 1, 0));
-        glm::mat4 mesh_matrix = projection * view * model;
+        HMM_Mat4 model = HMM_Rotate_RH(data.number_of_frame * 0.1f * HMM_DegToRad, HMM_V3(0, 1, 0));
+        HMM_Mat4 mesh_matrix = projection * view * model;
 
         VertexShaderPushConstants constants{};
         constants.mvp_matrix = mesh_matrix;

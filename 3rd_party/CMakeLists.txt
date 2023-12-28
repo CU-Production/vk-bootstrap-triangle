@@ -10,9 +10,9 @@ set(GLFW_INSTALL OFF CACHE INTERNAL "glfw install")
 set(GLFW_VULKAN_STATIC OFF CACHE INTERNAL "glfw vulkan")
 add_subdirectory(glfw)
 
-# glm
-add_library(glm INTERFACE)
-target_include_directories(glm INTERFACE glm)
+# HandmadeMath
+add_library(hmm INTERFACE)
+target_include_directories(hmm INTERFACE HandmadeMath)
 
 # vma
 add_library(vma INTERFACE)
