@@ -235,7 +235,8 @@ int create_swapchain(Init& init) {
     vkb::SwapchainBuilder swapchain_builder{ init.device };
     auto swap_ret = swapchain_builder
         .set_old_swapchain(init.swapchain)
-        .set_desired_format({VK_FORMAT_R8G8B8A8_SRGB})
+        // .set_desired_format({VK_FORMAT_R8G8B8A8_SRGB})
+        .set_desired_format({VK_FORMAT_R8G8B8A8_UINT})
         .build();
     if (!swap_ret) {
         std::cout << swap_ret.error().message() << " " << swap_ret.vk_result() << "\n";
