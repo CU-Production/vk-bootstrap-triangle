@@ -20,8 +20,8 @@
 #include <VkBootstrap.h>
 
 struct Vertex {
-    HMM_Vec3 pos;
-    HMM_Vec3 color;
+    alignas(16) HMM_Vec3 pos;
+    alignas(16) HMM_Vec3 color;
 };
 
 const std::vector<Vertex> vertices = {
