@@ -290,6 +290,7 @@ int create_swapchain(Init& init) {
         .set_old_swapchain(init.swapchain)
         // .set_desired_format({VK_FORMAT_R8G8B8A8_SRGB})
         .set_desired_format({VK_FORMAT_R8G8B8A8_UINT})
+        .set_desired_present_mode({VK_PRESENT_MODE_FIFO_KHR})
         .build();
     if (!swap_ret) {
         std::cout << swap_ret.error().message() << " " << swap_ret.vk_result() << "\n";
