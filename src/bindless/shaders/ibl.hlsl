@@ -13,7 +13,6 @@ struct VSOutput
     float4 Normal : NORMAL0;
     float4 Tangent : TANGENT0;
     float2 UV : TEXCOORD0;
-    nointerpolation float2 Params : TEXCOORD1; // [Metalic, roughness].
 };
 
 struct PushData
@@ -24,6 +23,7 @@ struct PushData
 #elif __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
     [[vk::offset(80)]]
     uint4  texIdx;
+    uint4  gltfTexIdx;
     float4 lightPositions[4];
 	float4 cameraPosition;
     float4 albedo_maxPreFilterMips;
@@ -64,9 +64,6 @@ VSOutput mainVS(VSInput vertInput)
     output.Tangent = worldTangent;
     output.UV = vertInput.vUV;
 
-
-    output.Params.xy = pushData.cumtom_param.xy;
-
     return output;
 }
 #endif
@@ -74,9 +71,10 @@ VSOutput mainVS(VSInput vertInput)
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
 #include "GGXModel.hlsli"
 
-[[vk::binding(1)]] TextureCube  i_cubeMapTextures[];
 [[vk::binding(1)]] Texture2D    i_2dtextures[];
-[[vk::binding(1)]] SamplerState samplerState;
+[[vk::binding(1)]] SamplerState i_2dsamplerState;
+[[vk::binding(1)]] TextureCube  i_cubeMapTextures[];
+[[vk::binding(1)]] SamplerState i_cubesamplerState;
 
 // [[vk::binding(1)]] TextureCube i_diffuseCubeMapTexture;      // texIdx.y
 // [[vk::binding(1)]] TextureCube i_prefilterEnvCubeMapTexture; // texIdx.z
@@ -84,18 +82,28 @@ VSOutput mainVS(VSInput vertInput)
 
 float4 mainPS(VSOutput fragInput) : SV_TARGET
 {
-    float3 lightColor = float3(24.0, 24.0, 24.0);
+    const float3 lightColor = float3(24.0, 24.0, 24.0);
 
-	// Gold
-	float3 Albedo = pushData.albedo_maxPreFilterMips.xyz; // F0
-    float maxMipLevel = pushData.albedo_maxPreFilterMips.w;
+    float2 uv = fragInput.UV;
+    // float3 Albedo = pushData.albedo_maxPreFilterMips.xyz; // F0
+    const float3 Albedo = i_2dtextures[NonUniformResourceIndex(pushData.gltfTexIdx.x)].Sample(i_2dsamplerState, uv).xyz;
+    const float3 amr = i_2dtextures[NonUniformResourceIndex(pushData.gltfTexIdx.y)].Sample(i_2dsamplerState, uv).xyz;
+    const float ao = amr.x;
+    const float metallic = amr.z;
+	const float roughness = amr.y;
+    const float maxMipLevel = pushData.albedo_maxPreFilterMips.w;
+    const float3 emissive = i_2dtextures[NonUniformResourceIndex(pushData.gltfTexIdx.w)].Sample(i_2dsamplerState, uv).xyz;
 
-	float3 V = normalize(pushData.cameraPosition.xyz -fragInput.WorldPos.xyz);
+	float3 V = normalize(pushData.cameraPosition.xyz - fragInput.WorldPos.xyz);
     float3 N = normalize(fragInput.Normal.xyz);
     float3 R = reflect(-V, N);
 
-	float metallic = fragInput.Params.x;
-	float roughness = fragInput.Params.y;
+    float3 tangent = normalize(fragInput.Tangent.xyz);
+    float3 biTangent = normalize(cross(N, tangent));
+
+    float3 normalSampled = i_2dtextures[NonUniformResourceIndex(pushData.gltfTexIdx.z)].Sample(i_2dsamplerState, uv).xyz;
+    normalSampled = normalSampled * 2.0 - 1.0;
+    N = tangent * normalSampled.x + biTangent * normalSampled.y + N * normalSampled.z;
 
     float3 F0 = float3(0.04, 0.04, 0.04);
     F0        = lerp(F0, Albedo, float3(metallic, metallic, metallic));
@@ -108,7 +116,7 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
 	float3 Lo = float3(0.0, 0.0, 0.0); // Output light values to the view direction.
     if (enable_light)
     {
-    	for(int i = 0; i < 4; i++)
+        for(int i = 0; i < 4; i++)
         {
             float3 lightPos = pushData.lightPositions[i].xyz;
             float3 L        = normalize(lightPos - fragInput.WorldPos.xyz);
@@ -147,35 +155,37 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
         float3 Kd = float3(1.0, 1.0, 1.0) - Ks;
         Kd *= (1.0 - metallic);
 
-        float3 diffuseIrradiance = i_cubeMapTextures[NonUniformResourceIndex(pushData.texIdx.y)].Sample(samplerState, N).xyz;
+        float3 diffuseIrradiance = i_cubeMapTextures[NonUniformResourceIndex(pushData.texIdx.y)].Sample(i_cubesamplerState, N).xyz;
 
         float3 diffuse = Kd * diffuseIrradiance * Albedo;
 
-        IBLo += diffuse;
+        IBLo += diffuse * ao;
     }
 
     if (enable_ibl_specular)
     {
         float3 Ks = fresnelSchlickRoughness(NoV, F0, roughness);
 
-        float3 prefilterEnv = i_cubeMapTextures[NonUniformResourceIndex(pushData.texIdx.z)].SampleLevel(samplerState,
+        float3 prefilterEnv = i_cubeMapTextures[NonUniformResourceIndex(pushData.texIdx.z)].SampleLevel(i_cubesamplerState,
                                                                        R, roughness * maxMipLevel).xyz;
 
-        float2 envBrdf = i_2dtextures[NonUniformResourceIndex(pushData.texIdx.w)].Sample(samplerState, float2(NoV, roughness)).xy;
+        float2 envBrdf = i_2dtextures[NonUniformResourceIndex(pushData.texIdx.w)].Sample(i_2dsamplerState, float2(NoV, roughness)).xy;
 
         float3 specular = prefilterEnv * (Ks * envBrdf.x + envBrdf.y);
 
-        IBLo += specular;
+        // IBLo += specular * computeSpecOcclusion(max(dot(N, V), 0.0), ao, roughness);
+        IBLo += specular * ao;
     }
 
-    float3 color = IBLo + Lo;
+    float3 color = IBLo + Lo + emissive;
 	
     // HDR tonemapping
-    color = color / (color + (1.0).xxx);
+    color = color / (color + (2.0).xxx);
 
     // Gamma Correction
     color = pow(color, (1.0/2.2).xxx);
 
 	return float4(color, 1.0);
+    // return float4(emissive + Albedo, 1.0);
 }
 #endif

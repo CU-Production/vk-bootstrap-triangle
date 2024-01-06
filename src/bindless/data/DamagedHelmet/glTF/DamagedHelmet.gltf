@@ -112,7 +112,7 @@
 		{
 			"bufferView":0,
 			"componentType":5126,
-			"count":14806,
+			"count":16182,
 			"max":[
 				0.9424954056739807,
 				0.8128451108932495,
@@ -128,19 +128,19 @@
 		{
 			"bufferView":1,
 			"componentType":5126,
-			"count":14806,
+			"count":16182,
 			"type":"VEC3"
 		},
 		{
 			"bufferView":2,
 			"componentType":5126,
-			"count":14806,
+			"count":16182,
 			"type":"VEC2"
 		},
 		{
 			"bufferView":3,
 			"componentType":5126,
-			"count":14806,
+			"count":16182,
 			"type":"VEC4"
 		},
 		{
@@ -153,32 +153,32 @@
 	"bufferViews":[
 		{
 			"buffer":0,
-			"byteLength":177672,
+			"byteLength":194184,
 			"byteOffset":0,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":177672,
-			"byteOffset":177672,
+			"byteLength":194184,
+			"byteOffset":194184,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":118448,
-			"byteOffset":355344,
+			"byteLength":129456,
+			"byteOffset":388368,
 			"target":34962
 		},
 		{
 			"buffer":0,
-			"byteLength":236896,
-			"byteOffset":473792,
+			"byteLength":258912,
+			"byteOffset":517824,
 			"target":34962
 		},
 		{
 			"buffer":0,
 			"byteLength":92712,
-			"byteOffset":710688,
+			"byteOffset":776736,
 			"target":34963
 		}
 	],
@@ -190,7 +190,7 @@
 	],
 	"buffers":[
 		{
-			"byteLength":803400,
+			"byteLength":869448,
 			"uri":"DamagedHelmet.bin"
 		}
 	]

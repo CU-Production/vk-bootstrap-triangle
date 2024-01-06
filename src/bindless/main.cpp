@@ -48,6 +48,7 @@ struct SpheresVertexShaderPushConstants {
 
 struct SpheresPixelShaderPushConstants {
     uint32_t texIdx[4];
+    uint32_t gltfIdx[4];
     HMM_Vec4 lightPositions[4];
     HMM_Vec4 cameraPosition;
     HMM_Vec4 albedo_maxPreFilterMips;
@@ -193,7 +194,7 @@ struct RenderData {
                 VmaAllocation        vma_allocation;
 
                 VkDescriptorImageInfo descriptor_image_info;
-            } AO;
+            } AOMetalRoughness;
             struct {
                 VkImage              image;
                 VkImageView          image_view;
@@ -202,14 +203,6 @@ struct RenderData {
 
                 VkDescriptorImageInfo descriptor_image_info;
             } emissive;
-            struct {
-                VkImage              image;
-                VkImageView          image_view;
-                VkSampler            sampler;
-                VmaAllocation        vma_allocation;
-
-                VkDescriptorImageInfo descriptor_image_info;
-            } metalRoughness;
             struct {
                 VkImage              image;
                 VkImageView          image_view;
@@ -841,7 +834,6 @@ int load_gltf_data(Init& init, RenderData& data, const std::string& gltf_file_pa
     std::string err;
     std::string warn;
 
-
     std::string ext = tinygltf::GetFilePathExtension(gltf_file_path);
     bool ret = false;
     if (ext == "glb") {
@@ -973,6 +965,712 @@ int load_gltf_data(Init& init, RenderData& data, const std::string& gltf_file_pa
         free(pNomralData);
         free(pTangentData);
         free(pUvData);
+
+        // Send image info to GPU and set relevant data
+        const auto& material = model.materials[materialIdx];
+
+        // A texture binding is defined by an index of a texture object and an optional index of texture coordinates.
+        // Its green channel contains roughness values and its blue channel contains metalness values.
+        int baseColorTexIdx = material.pbrMetallicRoughness.baseColorTexture.index;
+        int metallicRoughnessTexIdx = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
+        int occlusionTexIdx = material.occlusionTexture.index;
+        int normalTexIdx = material.normalTexture.index;
+        int emissiveTexIdx = material.emissiveTexture.index;
+
+        assert(metallicRoughnessTexIdx == occlusionTexIdx, "Conbine AO and metallicRoughness texture");
+
+        // A texture is defined by an image index, denoted by the source property and a sampler index (sampler).
+        // Assmue that all textures are 8 bits per channel. They are all xxx / 255. They all have 4 components.
+        const auto& baseColorTex = model.textures[baseColorTexIdx];
+        const auto& aoMetallicRoughnessTex = model.textures[metallicRoughnessTexIdx];
+        const auto& normalTex = model.textures[normalTexIdx];
+        const auto& emissiveTex = model.textures[emissiveTexIdx];
+
+        int baseColorTexImgIdx = baseColorTex.source;
+        int aoMetallicRoughnessTexImgIdx = aoMetallicRoughnessTex.source;
+        int normalTexImgIdx = normalTex.source;
+        int emissiveTexImgIdx = emissiveTex.source;
+
+        const auto& baseColorImg = model.images[baseColorTexImgIdx];
+        const auto& aoMetalllicRoughnessImg = model.images[aoMetallicRoughnessTexImgIdx];
+        const auto& normalImg = model.images[normalTexImgIdx];
+        const auto& emissiveImg = model.images[emissiveTexImgIdx];
+
+        // load textures
+        {
+            // base color img
+            {
+                VmaAllocationCreateInfo base_color_img_vma_alloc_info{};
+                base_color_img_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+                base_color_img_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+                VkImageCreateInfo base_color_img_img_info{};
+                base_color_img_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+                base_color_img_img_info.imageType = VK_IMAGE_TYPE_2D;
+                base_color_img_img_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                base_color_img_img_info.extent.width = baseColorImg.width;
+                base_color_img_img_info.extent.height = baseColorImg.height;
+                base_color_img_img_info.extent.depth = 1;
+                base_color_img_img_info.mipLevels = 1;
+                base_color_img_img_info.arrayLayers = 1;
+                base_color_img_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+                base_color_img_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                base_color_img_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+                if (vmaCreateImage(init.allocator, &base_color_img_img_info, &base_color_img_vma_alloc_info, &data.gltf_model.textures.albedo.image, &data.gltf_model.textures.albedo.vma_allocation, nullptr) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.albedo.image\n";
+                    return -1;
+                }
+
+                // staging buffer copy
+                {
+                    const size_t buffer_size = 4 * sizeof(uint8_t) * baseColorImg.width * baseColorImg.height;
+                    VkBuffer staging_buffer;
+                    VmaAllocation staging_buffer_allocation;
+                    VmaAllocationInfo vma_alloc_info;
+
+                    VkBufferCreateInfo staging_buffer_alloc_info{};
+                    staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                    staging_buffer_alloc_info.size = buffer_size;;
+                    staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+                    VmaAllocationCreateInfo staging_alloc_info{};
+                    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+                    staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+                    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &staging_buffer, &staging_buffer_allocation, &vma_alloc_info) != VK_SUCCESS) {
+                        std::cout << "failed to staging buffer\n";
+                        return -1; // failed to create vertex buffer
+                    }
+
+                    /* copy data to staging buffer*/
+                    memcpy(vma_alloc_info.pMappedData, baseColorImg.image.data(), vma_alloc_info.size);
+
+                    VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+                    cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cmdbuffer_alloc_info.commandPool = data.command_pool;
+                    cmdbuffer_alloc_info.commandBufferCount = 1;
+
+                    VkCommandBuffer commandBuffer;
+                    init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+                    VkCommandBufferBeginInfo beginInfo{};
+                    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+                    init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+                    // Transform the layout of the image to copy source
+                    VkImageMemoryBarrier undefToDstBarrier{};
+                    undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    undefToDstBarrier.image = data.gltf_model.textures.albedo.image;
+                    undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    undefToDstBarrier.subresourceRange.baseMipLevel = 0;
+                    undefToDstBarrier.subresourceRange.levelCount = 1;
+                    undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+                    undefToDstBarrier.subresourceRange.layerCount = 1;
+                    undefToDstBarrier.srcAccessMask = 0;
+                    undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &undefToDstBarrier);
+
+                    VkBufferImageCopy copyBufferToImage{};
+                    copyBufferToImage.bufferRowLength = baseColorImg.width;
+                    copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    copyBufferToImage.imageSubresource.mipLevel = 0;
+                    copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+                    copyBufferToImage.imageSubresource.layerCount = 1;
+                    copyBufferToImage.imageExtent.width = baseColorImg.width;
+                    copyBufferToImage.imageExtent.height = baseColorImg.height;
+                    copyBufferToImage.imageExtent.depth = 1;
+                    init.disp.cmdCopyBufferToImage(commandBuffer, staging_buffer, data.gltf_model.textures.albedo.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+                    // Transform the layout of the image to shader access resource
+                    VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+                    dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    dstToShaderReadOptBarrier.image = data.gltf_model.textures.albedo.image;
+                    dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+                    dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.layerCount = 1;
+                    dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+                    dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &dstToShaderReadOptBarrier);
+
+                    VkSubmitInfo submit_info{};
+                    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                    submit_info.commandBufferCount = 1;
+                    submit_info.pCommandBuffers = &commandBuffer;
+
+                    init.disp.endCommandBuffer(commandBuffer);
+
+                    init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+                    init.disp.queueWaitIdle(data.graphics_queue);
+
+                    init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+                    vmaDestroyBuffer(init.allocator, staging_buffer, staging_buffer_allocation);
+                }
+
+                VkImageViewCreateInfo image_view_info{};
+                image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                image_view_info.image = data.gltf_model.textures.albedo.image;
+                image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                image_view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                image_view_info.subresourceRange.levelCount = 1;
+                image_view_info.subresourceRange.layerCount = 1;
+
+                if (init.disp.createImageView(&image_view_info, nullptr, &data.gltf_model.textures.albedo.image_view) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.albedo.image_view\n";
+                    return -1;
+                }
+
+                VkSamplerCreateInfo sampler_info{};
+                sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+                sampler_info.magFilter = VK_FILTER_LINEAR;
+                sampler_info.minFilter = VK_FILTER_LINEAR;
+                sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.minLod = -1000;
+                sampler_info.maxLod = 1000;
+                sampler_info.maxAnisotropy = 1.0f;
+
+                if (init.disp.createSampler(&sampler_info, nullptr, &data.gltf_model.textures.albedo.sampler) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.albedo.sampler\n";
+                    return -1;
+                }
+
+                data.gltf_model.textures.albedo.descriptor_image_info.sampler = data.gltf_model.textures.albedo.sampler;
+                data.gltf_model.textures.albedo.descriptor_image_info.imageView = data.gltf_model.textures.albedo.image_view;
+                data.gltf_model.textures.albedo.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+            // AO and MetalllicRoughness img
+            {
+                VmaAllocationCreateInfo ao_metallic_roughness_img_vma_alloc_info{};
+                ao_metallic_roughness_img_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+                ao_metallic_roughness_img_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+                VkImageCreateInfo ao_metallic_roughness_img_img_info{};
+                ao_metallic_roughness_img_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+                ao_metallic_roughness_img_img_info.imageType = VK_IMAGE_TYPE_2D;
+                ao_metallic_roughness_img_img_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                ao_metallic_roughness_img_img_info.extent.width = aoMetalllicRoughnessImg.width;
+                ao_metallic_roughness_img_img_info.extent.height = aoMetalllicRoughnessImg.height;
+                ao_metallic_roughness_img_img_info.extent.depth = 1;
+                ao_metallic_roughness_img_img_info.mipLevels = 1;
+                ao_metallic_roughness_img_img_info.arrayLayers = 1;
+                ao_metallic_roughness_img_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+                ao_metallic_roughness_img_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                ao_metallic_roughness_img_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+                if (vmaCreateImage(init.allocator, &ao_metallic_roughness_img_img_info, &ao_metallic_roughness_img_vma_alloc_info, &data.gltf_model.textures.AOMetalRoughness.image, &data.gltf_model.textures.AOMetalRoughness.vma_allocation, nullptr) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.AOMetalRoughness.image\n";
+                    return -1;
+                }
+
+                // staging buffer copy
+                {
+                    const size_t buffer_size = 4 * sizeof(uint8_t) * aoMetalllicRoughnessImg.width * aoMetalllicRoughnessImg.height;
+                    VkBuffer staging_buffer;
+                    VmaAllocation staging_buffer_allocation;
+                    VmaAllocationInfo vma_alloc_info;
+
+                    VkBufferCreateInfo staging_buffer_alloc_info{};
+                    staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                    staging_buffer_alloc_info.size = buffer_size;;
+                    staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+                    VmaAllocationCreateInfo staging_alloc_info{};
+                    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+                    staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+                    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &staging_buffer, &staging_buffer_allocation, &vma_alloc_info) != VK_SUCCESS) {
+                        std::cout << "failed to staging buffer\n";
+                        return -1; // failed to create vertex buffer
+                    }
+
+                    /* copy data to staging buffer*/
+                    memcpy(vma_alloc_info.pMappedData, aoMetalllicRoughnessImg.image.data(), vma_alloc_info.size);
+
+                    VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+                    cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cmdbuffer_alloc_info.commandPool = data.command_pool;
+                    cmdbuffer_alloc_info.commandBufferCount = 1;
+
+                    VkCommandBuffer commandBuffer;
+                    init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+                    VkCommandBufferBeginInfo beginInfo{};
+                    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+                    init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+                    // Transform the layout of the image to copy source
+                    VkImageMemoryBarrier undefToDstBarrier{};
+                    undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    undefToDstBarrier.image = data.gltf_model.textures.AOMetalRoughness.image;
+                    undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    undefToDstBarrier.subresourceRange.baseMipLevel = 0;
+                    undefToDstBarrier.subresourceRange.levelCount = 1;
+                    undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+                    undefToDstBarrier.subresourceRange.layerCount = 1;
+                    undefToDstBarrier.srcAccessMask = 0;
+                    undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &undefToDstBarrier);
+
+                    VkBufferImageCopy copyBufferToImage{};
+                    copyBufferToImage.bufferRowLength = aoMetalllicRoughnessImg.width;
+                    copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    copyBufferToImage.imageSubresource.mipLevel = 0;
+                    copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+                    copyBufferToImage.imageSubresource.layerCount = 1;
+                    copyBufferToImage.imageExtent.width = aoMetalllicRoughnessImg.width;
+                    copyBufferToImage.imageExtent.height = aoMetalllicRoughnessImg.height;
+                    copyBufferToImage.imageExtent.depth = 1;
+                    init.disp.cmdCopyBufferToImage(commandBuffer, staging_buffer, data.gltf_model.textures.AOMetalRoughness.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+                    // Transform the layout of the image to shader access resource
+                    VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+                    dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    dstToShaderReadOptBarrier.image = data.gltf_model.textures.AOMetalRoughness.image;
+                    dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+                    dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.layerCount = 1;
+                    dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+                    dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &dstToShaderReadOptBarrier);
+
+                    VkSubmitInfo submit_info{};
+                    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                    submit_info.commandBufferCount = 1;
+                    submit_info.pCommandBuffers = &commandBuffer;
+
+                    init.disp.endCommandBuffer(commandBuffer);
+
+                    init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+                    init.disp.queueWaitIdle(data.graphics_queue);
+
+                    init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+                    vmaDestroyBuffer(init.allocator, staging_buffer, staging_buffer_allocation);
+                }
+
+                VkImageViewCreateInfo image_view_info{};
+                image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                image_view_info.image = data.gltf_model.textures.AOMetalRoughness.image;
+                image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                image_view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                image_view_info.subresourceRange.levelCount = 1;
+                image_view_info.subresourceRange.layerCount = 1;
+
+                if (init.disp.createImageView(&image_view_info, nullptr, &data.gltf_model.textures.AOMetalRoughness.image_view) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.AOMetalRoughness.image_view\n";
+                    return -1;
+                }
+
+                VkSamplerCreateInfo sampler_info{};
+                sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+                sampler_info.magFilter = VK_FILTER_LINEAR;
+                sampler_info.minFilter = VK_FILTER_LINEAR;
+                sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.minLod = -1000;
+                sampler_info.maxLod = 1000;
+                sampler_info.maxAnisotropy = 1.0f;
+
+                if (init.disp.createSampler(&sampler_info, nullptr, &data.gltf_model.textures.AOMetalRoughness.sampler) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.AOMetalRoughness.sampler\n";
+                    return -1;
+                }
+
+                data.gltf_model.textures.AOMetalRoughness.descriptor_image_info.sampler = data.gltf_model.textures.AOMetalRoughness.sampler;
+                data.gltf_model.textures.AOMetalRoughness.descriptor_image_info.imageView = data.gltf_model.textures.AOMetalRoughness.image_view;
+                data.gltf_model.textures.AOMetalRoughness.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+            // normal img
+            {
+                VmaAllocationCreateInfo normal_img_vma_alloc_info{};
+                normal_img_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+                normal_img_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+                VkImageCreateInfo normal_img_img_info{};
+                normal_img_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+                normal_img_img_info.imageType = VK_IMAGE_TYPE_2D;
+                normal_img_img_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                normal_img_img_info.extent.width = normalImg.width;
+                normal_img_img_info.extent.height = normalImg.height;
+                normal_img_img_info.extent.depth = 1;
+                normal_img_img_info.mipLevels = 1;
+                normal_img_img_info.arrayLayers = 1;
+                normal_img_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+                normal_img_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                normal_img_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+                if (vmaCreateImage(init.allocator, &normal_img_img_info, &normal_img_vma_alloc_info, &data.gltf_model.textures.normal.image, &data.gltf_model.textures.normal.vma_allocation, nullptr) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.normal.image\n";
+                    return -1;
+                }
+
+                // staging buffer copy
+                {
+                    const size_t buffer_size = 4 * sizeof(uint8_t) * normalImg.width * normalImg.height;
+                    VkBuffer staging_buffer;
+                    VmaAllocation staging_buffer_allocation;
+                    VmaAllocationInfo vma_alloc_info;
+
+                    VkBufferCreateInfo staging_buffer_alloc_info{};
+                    staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                    staging_buffer_alloc_info.size = buffer_size;;
+                    staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+                    VmaAllocationCreateInfo staging_alloc_info{};
+                    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+                    staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+                    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &staging_buffer, &staging_buffer_allocation, &vma_alloc_info) != VK_SUCCESS) {
+                        std::cout << "failed to staging buffer\n";
+                        return -1; // failed to create vertex buffer
+                    }
+
+                    /* copy data to staging buffer*/
+                    memcpy(vma_alloc_info.pMappedData, normalImg.image.data(), vma_alloc_info.size);
+
+                    VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+                    cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cmdbuffer_alloc_info.commandPool = data.command_pool;
+                    cmdbuffer_alloc_info.commandBufferCount = 1;
+
+                    VkCommandBuffer commandBuffer;
+                    init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+                    VkCommandBufferBeginInfo beginInfo{};
+                    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+                    init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+                    // Transform the layout of the image to copy source
+                    VkImageMemoryBarrier undefToDstBarrier{};
+                    undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    undefToDstBarrier.image = data.gltf_model.textures.normal.image;
+                    undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    undefToDstBarrier.subresourceRange.baseMipLevel = 0;
+                    undefToDstBarrier.subresourceRange.levelCount = 1;
+                    undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+                    undefToDstBarrier.subresourceRange.layerCount = 1;
+                    undefToDstBarrier.srcAccessMask = 0;
+                    undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &undefToDstBarrier);
+
+                    VkBufferImageCopy copyBufferToImage{};
+                    copyBufferToImage.bufferRowLength = normalImg.width;
+                    copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    copyBufferToImage.imageSubresource.mipLevel = 0;
+                    copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+                    copyBufferToImage.imageSubresource.layerCount = 1;
+                    copyBufferToImage.imageExtent.width = normalImg.width;
+                    copyBufferToImage.imageExtent.height = normalImg.height;
+                    copyBufferToImage.imageExtent.depth = 1;
+                    init.disp.cmdCopyBufferToImage(commandBuffer, staging_buffer, data.gltf_model.textures.normal.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+                    // Transform the layout of the image to shader access resource
+                    VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+                    dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    dstToShaderReadOptBarrier.image = data.gltf_model.textures.normal.image;
+                    dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+                    dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.layerCount = 1;
+                    dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+                    dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &dstToShaderReadOptBarrier);
+
+                    VkSubmitInfo submit_info{};
+                    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                    submit_info.commandBufferCount = 1;
+                    submit_info.pCommandBuffers = &commandBuffer;
+
+                    init.disp.endCommandBuffer(commandBuffer);
+
+                    init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+                    init.disp.queueWaitIdle(data.graphics_queue);
+
+                    init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+                    vmaDestroyBuffer(init.allocator, staging_buffer, staging_buffer_allocation);
+                }
+
+                VkImageViewCreateInfo image_view_info{};
+                image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                image_view_info.image = data.gltf_model.textures.normal.image;
+                image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                image_view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                image_view_info.subresourceRange.levelCount = 1;
+                image_view_info.subresourceRange.layerCount = 1;
+
+                if (init.disp.createImageView(&image_view_info, nullptr, &data.gltf_model.textures.normal.image_view) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.normal.image_view\n";
+                    return -1;
+                }
+
+                VkSamplerCreateInfo sampler_info{};
+                sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+                sampler_info.magFilter = VK_FILTER_LINEAR;
+                sampler_info.minFilter = VK_FILTER_LINEAR;
+                sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.minLod = -1000;
+                sampler_info.maxLod = 1000;
+                sampler_info.maxAnisotropy = 1.0f;
+
+                if (init.disp.createSampler(&sampler_info, nullptr, &data.gltf_model.textures.normal.sampler) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.normal.sampler\n";
+                    return -1;
+                }
+
+                data.gltf_model.textures.normal.descriptor_image_info.sampler = data.gltf_model.textures.normal.sampler;
+                data.gltf_model.textures.normal.descriptor_image_info.imageView = data.gltf_model.textures.normal.image_view;
+                data.gltf_model.textures.normal.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+            // emissive img
+            {
+                VmaAllocationCreateInfo emissive_img_vma_alloc_info{};
+                emissive_img_vma_alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+                emissive_img_vma_alloc_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+                VkImageCreateInfo emissive_img_img_info{};
+                emissive_img_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+                emissive_img_img_info.imageType = VK_IMAGE_TYPE_2D;
+                emissive_img_img_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                emissive_img_img_info.extent.width = emissiveImg.width;
+                emissive_img_img_info.extent.height = emissiveImg.height;
+                emissive_img_img_info.extent.depth = 1;
+                emissive_img_img_info.mipLevels = 1;
+                emissive_img_img_info.arrayLayers = 1;
+                emissive_img_img_info.samples = VK_SAMPLE_COUNT_1_BIT;
+                emissive_img_img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                emissive_img_img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+                if (vmaCreateImage(init.allocator, &emissive_img_img_info, &emissive_img_vma_alloc_info, &data.gltf_model.textures.emissive.image, &data.gltf_model.textures.emissive.vma_allocation, nullptr) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.emissive.image\n";
+                    return -1;
+                }
+
+                // staging buffer copy
+                {
+                    const size_t buffer_size = 4 * sizeof(uint8_t) * emissiveImg.width * emissiveImg.height;
+                    VkBuffer staging_buffer;
+                    VmaAllocation staging_buffer_allocation;
+                    VmaAllocationInfo vma_alloc_info;
+
+                    VkBufferCreateInfo staging_buffer_alloc_info{};
+                    staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                    staging_buffer_alloc_info.size = buffer_size;;
+                    staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+                    VmaAllocationCreateInfo staging_alloc_info{};
+                    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+                    staging_alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+                    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &staging_buffer, &staging_buffer_allocation, &vma_alloc_info) != VK_SUCCESS) {
+                        std::cout << "failed to staging buffer\n";
+                        return -1; // failed to create vertex buffer
+                    }
+
+                    /* copy data to staging buffer*/
+                    memcpy(vma_alloc_info.pMappedData, emissiveImg.image.data(), vma_alloc_info.size);
+
+                    VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+                    cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cmdbuffer_alloc_info.commandPool = data.command_pool;
+                    cmdbuffer_alloc_info.commandBufferCount = 1;
+
+                    VkCommandBuffer commandBuffer;
+                    init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+                    VkCommandBufferBeginInfo beginInfo{};
+                    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+                    init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+                    // Transform the layout of the image to copy source
+                    VkImageMemoryBarrier undefToDstBarrier{};
+                    undefToDstBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    undefToDstBarrier.image = data.gltf_model.textures.emissive.image;
+                    undefToDstBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    undefToDstBarrier.subresourceRange.baseMipLevel = 0;
+                    undefToDstBarrier.subresourceRange.levelCount = 1;
+                    undefToDstBarrier.subresourceRange.baseArrayLayer = 0;
+                    undefToDstBarrier.subresourceRange.layerCount = 1;
+                    undefToDstBarrier.srcAccessMask = 0;
+                    undefToDstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    undefToDstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    undefToDstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_HOST_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &undefToDstBarrier);
+
+                    VkBufferImageCopy copyBufferToImage{};
+                    copyBufferToImage.bufferRowLength = emissiveImg.width;
+                    copyBufferToImage.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    copyBufferToImage.imageSubresource.mipLevel = 0;
+                    copyBufferToImage.imageSubresource.baseArrayLayer = 0;
+                    copyBufferToImage.imageSubresource.layerCount = 1;
+                    copyBufferToImage.imageExtent.width = emissiveImg.width;
+                    copyBufferToImage.imageExtent.height = emissiveImg.height;
+                    copyBufferToImage.imageExtent.depth = 1;
+                    init.disp.cmdCopyBufferToImage(commandBuffer, staging_buffer, data.gltf_model.textures.emissive.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyBufferToImage);
+
+                    // Transform the layout of the image to shader access resource
+                    VkImageMemoryBarrier dstToShaderReadOptBarrier{};
+                    dstToShaderReadOptBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    dstToShaderReadOptBarrier.image = data.gltf_model.textures.emissive.image;
+                    dstToShaderReadOptBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    dstToShaderReadOptBarrier.subresourceRange.baseMipLevel = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.levelCount = 1;
+                    dstToShaderReadOptBarrier.subresourceRange.baseArrayLayer = 0;
+                    dstToShaderReadOptBarrier.subresourceRange.layerCount = 1;
+                    dstToShaderReadOptBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    dstToShaderReadOptBarrier.dstAccessMask = VK_ACCESS_NONE;
+                    dstToShaderReadOptBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    dstToShaderReadOptBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                    init.disp.cmdPipelineBarrier(commandBuffer,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                        0,
+                        0, nullptr,
+                        0, nullptr,
+                        1, &dstToShaderReadOptBarrier);
+
+                    VkSubmitInfo submit_info{};
+                    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                    submit_info.commandBufferCount = 1;
+                    submit_info.pCommandBuffers = &commandBuffer;
+
+                    init.disp.endCommandBuffer(commandBuffer);
+
+                    init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+                    init.disp.queueWaitIdle(data.graphics_queue);
+
+                    init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+                    vmaDestroyBuffer(init.allocator, staging_buffer, staging_buffer_allocation);
+                }
+
+                VkImageViewCreateInfo image_view_info{};
+                image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                image_view_info.image = data.gltf_model.textures.emissive.image;
+                image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                image_view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+                image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                image_view_info.subresourceRange.levelCount = 1;
+                image_view_info.subresourceRange.layerCount = 1;
+
+                if (init.disp.createImageView(&image_view_info, nullptr, &data.gltf_model.textures.emissive.image_view) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.emissive.image_view\n";
+                    return -1;
+                }
+
+                VkSamplerCreateInfo sampler_info{};
+                sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+                sampler_info.magFilter = VK_FILTER_LINEAR;
+                sampler_info.minFilter = VK_FILTER_LINEAR;
+                sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+                sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.minLod = -1000;
+                sampler_info.maxLod = 1000;
+                sampler_info.maxAnisotropy = 1.0f;
+
+                if (init.disp.createSampler(&sampler_info, nullptr, &data.gltf_model.textures.emissive.sampler) != VK_SUCCESS) {
+                    std::cout << "failed to create data.gltf_model.textures.emissive.sampler\n";
+                    return -1;
+                }
+
+                data.gltf_model.textures.emissive.descriptor_image_info.sampler = data.gltf_model.textures.emissive.sampler;
+                data.gltf_model.textures.emissive.descriptor_image_info.imageView = data.gltf_model.textures.emissive.image_view;
+                data.gltf_model.textures.emissive.descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+        }
     }
 
     return 0;
@@ -2018,7 +2716,7 @@ int create_dummy_img(Init& init, RenderData& data) {
     VkImageCreateInfo dummy_img_img_info{};
     dummy_img_img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     dummy_img_img_info.imageType = VK_IMAGE_TYPE_2D;
-    dummy_img_img_info.format = VK_FORMAT_R8G8B8A8_UINT;
+    dummy_img_img_info.format = VK_FORMAT_R8G8B8A8_SRGB;
     dummy_img_img_info.extent.width = width;
     dummy_img_img_info.extent.height = height;
     dummy_img_img_info.extent.depth = 1;
@@ -2146,7 +2844,7 @@ int create_dummy_img(Init& init, RenderData& data) {
     image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     image_view_info.image = data.dummy_img.image;
     image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    image_view_info.format = VK_FORMAT_R8G8B8A8_UINT;
+    image_view_info.format = VK_FORMAT_R8G8B8A8_SRGB;
     image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     image_view_info.subresourceRange.levelCount = 1;
     image_view_info.subresourceRange.layerCount = 1;
@@ -2161,14 +2859,13 @@ int create_dummy_img(Init& init, RenderData& data) {
     sampler_info.magFilter = VK_FILTER_LINEAR;
     sampler_info.minFilter = VK_FILTER_LINEAR;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_info.compareEnable = true;
-    // sampler_info.compareOp = VK_COMPARE_OP_LESS;
-    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.minLod = -1000;
     sampler_info.maxLod = 1000;
     sampler_info.maxAnisotropy = 1.0f;
+
 
     if (init.disp.createSampler(&sampler_info, nullptr, &data.dummy_img.sampler) != VK_SUCCESS) {
         std::cout << "failed to create dummy_img.sampler\n";
@@ -2292,6 +2989,11 @@ int draw_frame(Init& init, RenderData& data) {
             if (11 == img_idx) {texture_descriptors[img_idx] = data.diffuse_irradiance_cubemap.descriptor_image_info; continue;}
             if (12 == img_idx) {texture_descriptors[img_idx] = data.prefilter_env_cubemap.descriptor_image_info;      continue;}
             if (13 == img_idx) {texture_descriptors[img_idx] = data.envBrdf_img.descriptor_image_info;                continue;}
+
+            if (20 == img_idx) {texture_descriptors[img_idx] = data.gltf_model.textures.albedo.descriptor_image_info;           continue;}
+            if (21 == img_idx) {texture_descriptors[img_idx] = data.gltf_model.textures.AOMetalRoughness.descriptor_image_info; continue;}
+            if (22 == img_idx) {texture_descriptors[img_idx] = data.gltf_model.textures.normal.descriptor_image_info;           continue;}
+            if (23 == img_idx) {texture_descriptors[img_idx] = data.gltf_model.textures.emissive.descriptor_image_info;         continue;}
 
             texture_descriptors[img_idx] = data.dummy_img.descriptor_image_info;
         }
@@ -2432,6 +3134,10 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.texIdx[1] = 11;
             ps_constants.texIdx[2] = 12;
             ps_constants.texIdx[3] = 13;
+            ps_constants.gltfIdx[0] = 20;
+            ps_constants.gltfIdx[1] = 21;
+            ps_constants.gltfIdx[2] = 22;
+            ps_constants.gltfIdx[3] = 23;
 
             init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SpheresVertexShaderPushConstants), sizeof(SpheresPixelShaderPushConstants), &ps_constants);
 
@@ -2591,6 +3297,24 @@ int draw_frame(Init& init, RenderData& data) {
 }
 
 void cleanup(Init& init, RenderData& data) {
+    // gltf imgs
+    {
+        vmaDestroyImage(init.allocator, data.gltf_model.textures.albedo.image, data.gltf_model.textures.albedo.vma_allocation);
+        init.disp.destroyImageView(data.gltf_model.textures.albedo.image_view, nullptr);
+        init.disp.destroySampler(data.gltf_model.textures.albedo.sampler, nullptr);
+
+        vmaDestroyImage(init.allocator, data.gltf_model.textures.AOMetalRoughness.image, data.gltf_model.textures.AOMetalRoughness.vma_allocation);
+        init.disp.destroyImageView(data.gltf_model.textures.AOMetalRoughness.image_view, nullptr);
+        init.disp.destroySampler(data.gltf_model.textures.AOMetalRoughness.sampler, nullptr);
+
+        vmaDestroyImage(init.allocator, data.gltf_model.textures.normal.image, data.gltf_model.textures.normal.vma_allocation);
+        init.disp.destroyImageView(data.gltf_model.textures.normal.image_view, nullptr);
+        init.disp.destroySampler(data.gltf_model.textures.normal.sampler, nullptr);
+
+        vmaDestroyImage(init.allocator, data.gltf_model.textures.emissive.image, data.gltf_model.textures.emissive.vma_allocation);
+        init.disp.destroyImageView(data.gltf_model.textures.emissive.image_view, nullptr);
+        init.disp.destroySampler(data.gltf_model.textures.emissive.sampler, nullptr);
+    }
     // dummy_img
     {
         vmaDestroyImage(init.allocator, data.dummy_img.image, data.dummy_img.vma_allocation);
