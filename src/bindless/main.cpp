@@ -24,11 +24,11 @@
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 
-#define TINYOBJLOADER_IMPLEMENTATION
-#include "tiny_obj_loader.h"
-
+#define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define TINYGLTF_USE_CPP14
+#include "tiny_gltf.h"
 
 #define M_PI       3.14159265358979323846   // pi
 
@@ -37,6 +37,8 @@ constexpr uint32_t bindless_img_count = 32;
 struct Vertex {
     HMM_Vec3 position;
     HMM_Vec3 normal;
+    HMM_Vec4 tangent;
+    HMM_Vec2 uv;
 };
 
 struct SpheresVertexShaderPushConstants {
@@ -59,7 +61,7 @@ struct SkyboxPixelShaderPushConstants {
     HMM_Vec4 up;
     HMM_Vec2 viewportWidthHeight;
     HMM_Vec2 nearWidthHeight; // Near plane's width and height in the world.
-    float     near; // Pack it with 'up'.
+    float    camNear; // Pack it with 'up'.
 };
 
 struct Init {
@@ -109,17 +111,6 @@ struct RenderData {
     size_t number_of_frame = 0;
 
     VkDescriptorPool descriptor_pool;
-
-    struct {
-        VkBuffer vertex_buffer;
-        VmaAllocation vertex_buffer_allocation;
-
-        VkBuffer index_buffer;
-        VmaAllocation index_buffer_allocation;
-
-        std::vector<Vertex> vertices;
-        std::vector<uint32_t> indices;
-    } sphere_model;
 
     struct {
         ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -175,6 +166,60 @@ struct RenderData {
 
         VkDescriptorImageInfo descriptor_image_info;
     } dummy_img;
+
+    struct {
+        VkBuffer vertex_buffer;
+        VmaAllocation vertex_buffer_allocation;
+
+        VkBuffer index_buffer;
+        VmaAllocation index_buffer_allocation;
+
+        std::vector<Vertex> vertices;
+        std::vector<uint16_t> indices;
+
+        struct {
+            struct {
+                VkImage              image;
+                VkImageView          image_view;
+                VkSampler            sampler;
+                VmaAllocation        vma_allocation;
+
+                VkDescriptorImageInfo descriptor_image_info;
+            } albedo;
+            struct {
+                VkImage              image;
+                VkImageView          image_view;
+                VkSampler            sampler;
+                VmaAllocation        vma_allocation;
+
+                VkDescriptorImageInfo descriptor_image_info;
+            } AO;
+            struct {
+                VkImage              image;
+                VkImageView          image_view;
+                VkSampler            sampler;
+                VmaAllocation        vma_allocation;
+
+                VkDescriptorImageInfo descriptor_image_info;
+            } emissive;
+            struct {
+                VkImage              image;
+                VkImageView          image_view;
+                VkSampler            sampler;
+                VmaAllocation        vma_allocation;
+
+                VkDescriptorImageInfo descriptor_image_info;
+            } metalRoughness;
+            struct {
+                VkImage              image;
+                VkImageView          image_view;
+                VkSampler            sampler;
+                VmaAllocation        vma_allocation;
+
+                VkDescriptorImageInfo descriptor_image_info;
+            } normal;
+        } textures;
+    } gltf_model;
 };
 
 GLFWwindow* create_window_glfw(const char* window_name = "", bool resize = true) {
@@ -579,7 +624,7 @@ int create_spheres_graphics_pipeline(Init& init, RenderData& data) {
     bindingDescription.stride = sizeof(Vertex);
     bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+    std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{};
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
     attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -588,6 +633,14 @@ int create_spheres_graphics_pipeline(Init& init, RenderData& data) {
     attributeDescriptions[1].location = 1;
     attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributeDescriptions[1].offset = offsetof(Vertex, normal);
+    attributeDescriptions[2].binding = 0;
+    attributeDescriptions[2].location = 2;
+    attributeDescriptions[2].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributeDescriptions[2].offset = offsetof(Vertex, tangent);
+    attributeDescriptions[3].binding = 0;
+    attributeDescriptions[3].location = 3;
+    attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[3].offset = offsetof(Vertex, uv);
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -782,52 +835,151 @@ int create_sync_objects(Init& init, RenderData& data) {
     return 0;
 }
 
-int load_obj_data(Init& init, RenderData& data, const std::string& obj_file_path) {
-    tinyobj::ObjReaderConfig reader_config;
-    tinyobj::ObjReader sphere_obj_reader;
+int load_gltf_data(Init& init, RenderData& data, const std::string& gltf_file_path) {
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    std::string err;
+    std::string warn;
 
-    sphere_obj_reader.ParseFromFile(obj_file_path, reader_config);
 
-    auto& shapes = sphere_obj_reader.GetShapes();
-    auto& attrib = sphere_obj_reader.GetAttrib();
+    std::string ext = tinygltf::GetFilePathExtension(gltf_file_path);
+    bool ret = false;
+    if (ext == "glb") {
+        ret = loader.LoadBinaryFromFile(&model, &err, &warn, gltf_file_path);
+    } else {
+        ret = loader.LoadASCIIFromFile(&model, &err, &warn, gltf_file_path);
+    }
 
-    if (1 != shapes.size()) {
-        std::cout << "This application only accepts one shape!\n";
+    if (!warn.empty()) {
+        printf("tinygltf Warn: %s\n", warn.c_str());
+    }
+
+    if (!err.empty()) {
+        printf("tinygltf ERR: %s\n", err.c_str());
+    }
+    if (!ret) {
+        printf("Failed to load .glTF : %s\n", gltf_file_path.c_str());
         return -1;
     }
 
-    for (size_t s = 0; s < shapes.size(); s++) {
-        // Loop over faces(polygon)
-        uint32_t index_offset = 0;
-        uint32_t idxBufIdx = 0;
-        for (uint32_t f = 0; f < shapes[s].mesh.num_face_vertices.size(); f++) {
-            uint32_t fv = shapes[s].mesh.num_face_vertices[f];
+    assert(model.meshes.size() == 1, "DamagedHelmet only hase one model!");
+    const tinygltf::Mesh& mesh = model.meshes[0];
 
-            // Loop over vertices in the face.
-            for (uint32_t v = 0; v < fv; v++) {
-                tinyobj::index_t idx = shapes[s].mesh.indices[index_offset + v];
-                float vx = attrib.vertices[3 * size_t(idx.vertex_index) + 0];
-                float vy = attrib.vertices[3 * size_t(idx.vertex_index) + 1];
-                float vz = attrib.vertices[3 * size_t(idx.vertex_index) + 2];
+    // NOTE: TinyGltf loader has already loaded the binary buffer data and the images data.
+    const auto& binaryBuffer = model.buffers[0].data;
+    const unsigned char* pBufferData = binaryBuffer.data();
 
-                assert(idx.normal_index >= 0, "The model doesn't have normal information but it is necessary.");
-                float nx = attrib.normals[3 * size_t(idx.normal_index) + 0];
-                float ny = attrib.normals[3 * size_t(idx.normal_index) + 1];
-                float nz = attrib.normals[3 * size_t(idx.normal_index) + 2];
+    // load mesh
+    {
+        int posIdx = mesh.primitives[0].attributes.at("POSITION");
+        int normalIdx = mesh.primitives[0].attributes.at("NORMAL");
+        int tangentIdx = mesh.primitives[0].attributes.at("TANGENT");
+        int uvIdx = mesh.primitives[0].attributes.at("TEXCOORD_0");
+        int indicesIdx = mesh.primitives[0].indices;
+        int materialIdx = mesh.primitives[0].material;
 
-                data.sphere_model.vertices.push_back({{vx, vy, vz}, {nx, ny, nz}});
-                data.sphere_model.indices.push_back(idxBufIdx);
-                idxBufIdx++;
-            }
-            index_offset += fv;
+        // Elements notes:
+        // Position: float3, normal: float3, tangent: float4, texcoord: float2.
+
+        // Setup the vertex buffer and the index buffer
+        const auto& posAccessor = model.accessors[posIdx];
+        int posAccessorByteOffset = posAccessor.byteOffset;
+        int posAccessorEleCnt = posAccessor.count; // Assume a position element is a float3.
+
+        const auto& normalAccessor = model.accessors[normalIdx];
+        int normalAccessorByteOffset = normalAccessor.byteOffset;
+        int normalAccessorEleCnt = normalAccessor.count;
+
+        const auto& tangentAccessor = model.accessors[tangentIdx];
+        int tangentAccessorByteOffset = tangentAccessor.byteOffset;
+        int tangentAccessorEleCnt = tangentAccessor.count;
+
+        const auto& uvAccessor = model.accessors[uvIdx];
+        int uvAccessorByteOffset = uvAccessor.byteOffset;
+        int uvAccessorEleCnt = uvAccessor.count;
+
+        const auto& idxAccessor = model.accessors[indicesIdx];
+        int idxAccessorByteOffset = idxAccessor.byteOffset;
+        int idxAccessorEleCnt = idxAccessor.count;
+
+        // NOTE: Buffer views are just division of the buffer for the flight helmet model.
+        // SCALAR is in one buffer view. FLOAT2 in one. FLOAT3 in one. and FLOAT3 in one...
+        // Maybe they can be more
+        // A buffer view represents a contiguous segment of data in a buffer, defined by a byte offset into the buffer specified
+        // in the byteOffset property and a total byte length specified by the byteLength property of the buffer view.
+        const auto& posBufferView = model.bufferViews[posAccessor.bufferView];
+        const auto& normalBufferView = model.bufferViews[normalAccessor.bufferView];
+        const auto& tangentBufferView = model.bufferViews[tangentAccessor.bufferView];
+        const auto& uvBufferView = model.bufferViews[uvAccessor.bufferView];
+        const auto& idxBufferView = model.bufferViews[idxAccessor.bufferView];
+
+        // We assume that the idx, position, normal, uv and tangent are not interleaved.
+        // TODO: Even though they are interleaved, we can use a function to read out the data by making use of the stride bytes count.
+
+        // Assmue the data and element type of the index is uint16_t.
+        int idxBufferOffset = idxAccessorByteOffset + idxBufferView.byteOffset;
+        int idxBufferByteCnt = sizeof(uint16_t) * idxAccessor.count;
+        data.gltf_model.indices.resize(idxAccessor.count);
+        memcpy(data.gltf_model.indices.data(), &pBufferData[idxBufferOffset], idxBufferByteCnt);
+
+        // Assmue the data and element type of the position is float3
+        int posBufferOffset = posAccessorByteOffset + posBufferView.byteOffset;
+        int posBufferByteCnt = sizeof(float) * 3 * posAccessor.count;
+        float* pPosData = new float[3 * posAccessor.count];
+        memcpy(pPosData, &pBufferData[posBufferOffset], posBufferByteCnt);
+
+        // Assmue the data and element type of the normal is float3.
+        int normalBufferOffset = normalAccessorByteOffset + normalBufferView.byteOffset;
+        int normalBufferByteCnt = sizeof(float) * 3 * normalAccessor.count;
+        float* pNomralData = new float[3 * normalAccessor.count];
+        memcpy(pNomralData, &pBufferData[normalBufferOffset], normalBufferByteCnt);
+
+        // Assmue the data and element type of the tangent is float4.
+        int tangentBufferOffset = tangentAccessorByteOffset + tangentBufferView.byteOffset;
+        int tangentBufferByteCnt = sizeof(float) * 4 * tangentAccessor.count;
+        float* pTangentData = new float[4 * tangentAccessor.count];
+        memcpy(pTangentData, &pBufferData[tangentBufferOffset], tangentBufferByteCnt);
+
+        // Assume the data and element type of the texcoord is float2.
+        int uvBufferOffset = uvAccessorByteOffset + uvBufferView.byteOffset;
+        int uvBufferByteCnt = sizeof(float) * 2 * uvAccessor.count;
+        float* pUvData = new float[2 * uvAccessor.count];
+        memcpy(pUvData, &pBufferData[uvBufferOffset], uvBufferByteCnt);
+
+        data.gltf_model.vertices.resize(posAccessor.count);
+        for (uint32_t vertIdx = 0; vertIdx < posAccessor.count; vertIdx++) {
+            // pos -- 3 floats
+            data.gltf_model.vertices[vertIdx].position.X = pPosData[3 * vertIdx + 0];
+            data.gltf_model.vertices[vertIdx].position.Y = pPosData[3 * vertIdx + 1];
+            data.gltf_model.vertices[vertIdx].position.Z = pPosData[3 * vertIdx + 2];
+
+            // normal -- 3 floats
+            data.gltf_model.vertices[vertIdx].normal.X = pNomralData[3 * vertIdx + 0];
+            data.gltf_model.vertices[vertIdx].normal.Y = pNomralData[3 * vertIdx + 1];
+            data.gltf_model.vertices[vertIdx].normal.Z = pNomralData[3 * vertIdx + 2];
+
+            // tangent -- 4 floats
+            data.gltf_model.vertices[vertIdx].tangent.X = pTangentData[4 * vertIdx + 0];
+            data.gltf_model.vertices[vertIdx].tangent.Y = pTangentData[4 * vertIdx + 1];
+            data.gltf_model.vertices[vertIdx].tangent.Z = pTangentData[4 * vertIdx + 2];
+            data.gltf_model.vertices[vertIdx].tangent.W = pTangentData[4 * vertIdx + 3];
+
+            // uv -- 2 floats
+            data.gltf_model.vertices[vertIdx].uv.X = pUvData[2 * vertIdx + 0];
+            data.gltf_model.vertices[vertIdx].uv.Y = pUvData[2 * vertIdx + 1];
         }
+
+        free(pPosData);
+        free(pNomralData);
+        free(pTangentData);
+        free(pUvData);
     }
 
     return 0;
 }
 
 int create_vertex_buffer(Init& init, RenderData& data) {
-    const uint32_t buffer_size = sizeof(data.sphere_model.vertices[0]) * data.sphere_model.vertices.size();
+    const uint32_t buffer_size = sizeof(data.gltf_model.vertices[0]) * data.gltf_model.vertices.size();
     /* vertex buffer */
     VkBufferCreateInfo vertex_buffer_info{};
     vertex_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -838,7 +990,7 @@ int create_vertex_buffer(Init& init, RenderData& data) {
     VmaAllocationCreateInfo vertex_buffer_alloc_info = {};
     vertex_buffer_alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    if (vmaCreateBuffer(init.allocator, &vertex_buffer_info, &vertex_buffer_alloc_info, &data.sphere_model.vertex_buffer, &data.sphere_model.vertex_buffer_allocation, nullptr) != VK_SUCCESS) {
+    if (vmaCreateBuffer(init.allocator, &vertex_buffer_info, &vertex_buffer_alloc_info, &data.gltf_model.vertex_buffer, &data.gltf_model.vertex_buffer_allocation, nullptr) != VK_SUCCESS) {
         std::cout << "failed to create vertex buffer\n";
         return -1; // failed to create vertex buffer
     }
@@ -863,7 +1015,7 @@ int create_vertex_buffer(Init& init, RenderData& data) {
     }
 
     /* copy data to staging buffer*/
-    memcpy(vma_vertex_buffer_alloc_info.pMappedData, data.sphere_model.vertices.data(), vertex_buffer_info.size);
+    memcpy(vma_vertex_buffer_alloc_info.pMappedData, data.gltf_model.vertices.data(), vertex_buffer_info.size);
 
     VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
     cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -882,7 +1034,7 @@ int create_vertex_buffer(Init& init, RenderData& data) {
 
     VkBufferCopy copyRegion{};
     copyRegion.size = buffer_size;
-    init.disp.cmdCopyBuffer(commandBuffer, vertex_buffer_staging_buffer, data.sphere_model.vertex_buffer, 1, &copyRegion);
+    init.disp.cmdCopyBuffer(commandBuffer, vertex_buffer_staging_buffer, data.gltf_model.vertex_buffer, 1, &copyRegion);
 
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -902,7 +1054,7 @@ int create_vertex_buffer(Init& init, RenderData& data) {
 }
 
 int create_index_buffer(Init& init, RenderData& data) {
-    const uint32_t buffer_size = sizeof(data.sphere_model.indices[0]) * data.sphere_model.indices.size();
+    const uint32_t buffer_size = sizeof(data.gltf_model.indices[0]) * data.gltf_model.indices.size();
     /* index buffer */
     VkBufferCreateInfo index_buffer_info{};
     index_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -913,7 +1065,7 @@ int create_index_buffer(Init& init, RenderData& data) {
     VmaAllocationCreateInfo index_buffer_alloc_info = {};
     index_buffer_alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    if (vmaCreateBuffer(init.allocator, &index_buffer_info, &index_buffer_alloc_info, &data.sphere_model.index_buffer, &data.sphere_model.index_buffer_allocation, nullptr) != VK_SUCCESS) {
+    if (vmaCreateBuffer(init.allocator, &index_buffer_info, &index_buffer_alloc_info, &data.gltf_model.index_buffer, &data.gltf_model.index_buffer_allocation, nullptr) != VK_SUCCESS) {
         std::cout << "failed to create index buffer\n";
         return -1; // failed to create vertex buffer
     }
@@ -938,7 +1090,7 @@ int create_index_buffer(Init& init, RenderData& data) {
     }
 
     /* copy data to staging buffer*/
-    memcpy(vma_index_buffer_alloc_info.pMappedData, data.sphere_model.indices.data(), index_buffer_info.size);
+    memcpy(vma_index_buffer_alloc_info.pMappedData, data.gltf_model.indices.data(), index_buffer_info.size);
 
     VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
     cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -959,7 +1111,7 @@ int create_index_buffer(Init& init, RenderData& data) {
     copyRegion.srcOffset = 0; // Optional
     copyRegion.dstOffset = 0; // Optional
     copyRegion.size = buffer_size;
-    init.disp.cmdCopyBuffer(commandBuffer, index_buffer_staging_buffer, data.sphere_model.index_buffer, 1, &copyRegion);
+    init.disp.cmdCopyBuffer(commandBuffer, index_buffer_staging_buffer, data.gltf_model.index_buffer, 1, &copyRegion);
 
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -2190,10 +2342,10 @@ int draw_frame(Init& init, RenderData& data) {
             constants.up = {0, 1, 0, 1};
             constants.right = {0, 0, -1, 1};
             constants.viewportWidthHeight = {viewport.width, viewport.height};
-            constants.near = 0.1f;
+            constants.camNear = 0.1f;
             const float fov = 70.f * M_PI / 180.f;
             const float aspect = 1700.f / 900.f;
-            const float nearPlaneHeight = 2.f * constants.near * tanf(fov / 2.f);
+            const float nearPlaneHeight = 2.f * constants.camNear * tanf(fov / 2.f);
             const float nearPlaneWidth  = aspect * nearPlaneHeight;
             constants.nearWidthHeight = {nearPlaneWidth, nearPlaneHeight};
             constants.texIdx[0] = 10;
@@ -2245,10 +2397,10 @@ int draw_frame(Init& init, RenderData& data) {
 
             init.disp.cmdBindPipeline(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.graphics_pipeline);
 
-            VkBuffer vertex_buffers[] = {data.sphere_model.vertex_buffer};
+            VkBuffer vertex_buffers[] = {data.gltf_model.vertex_buffer};
             VkDeviceSize offsets[] = {0};
             init.disp.cmdBindVertexBuffers(data.command_buffers[i], 0, 1, vertex_buffers, offsets);
-            init.disp.cmdBindIndexBuffer(data.command_buffers[i], data.sphere_model.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            init.disp.cmdBindIndexBuffer(data.command_buffers[i], data.gltf_model.index_buffer, 0, VK_INDEX_TYPE_UINT16);
 
             HMM_Vec3 cam_pos = { 0.f,0.f,0.f };
             HMM_Mat4 view = HMM_LookAt_RH( cam_pos, {15, 0, 0}, {0, 1, 0});
@@ -2285,7 +2437,7 @@ int draw_frame(Init& init, RenderData& data) {
 
             init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &bindless_write_descriptor_set);
 
-            init.disp.cmdDrawIndexed(data.command_buffers[i], data.sphere_model.indices.size(), 15, 0, 0, 0);
+            init.disp.cmdDrawIndexed(data.command_buffers[i], data.gltf_model.indices.size(), 1, 0, 0, 0);
 
             init.disp.cmdEndRendering(data.command_buffers[i]);
 
@@ -2479,9 +2631,9 @@ void cleanup(Init& init, RenderData& data) {
 
     init.disp.destroyDescriptorPool(data.descriptor_pool, nullptr);
 
-    vmaDestroyBuffer(init.allocator, data.sphere_model.index_buffer, data.sphere_model.index_buffer_allocation);
+    vmaDestroyBuffer(init.allocator, data.gltf_model.index_buffer, data.gltf_model.index_buffer_allocation);
 
-    vmaDestroyBuffer(init.allocator, data.sphere_model.vertex_buffer, data.sphere_model.vertex_buffer_allocation);
+    vmaDestroyBuffer(init.allocator, data.gltf_model.vertex_buffer, data.gltf_model.vertex_buffer_allocation);
 
     for (size_t i = 0; i < init.swapchain.image_count; i++) {
         init.disp.destroySemaphore(data.finished_semaphore[i], nullptr);
@@ -2520,10 +2672,7 @@ int main() {
     if (0 != create_swapchain(init)) return -1;
     if (0 != get_queues(init, render_data)) return -1;
     if (0 != create_depthimage(init, render_data)) return -1;
-    if (0 != load_obj_data(init, render_data, "data/uvNormalSphere.obj")) return -1;
     if (0 != create_command_pool(init, render_data)) return -1;
-    if (0 != create_vertex_buffer(init, render_data)) return -1;
-    if (0 != create_index_buffer(init, render_data)) return -1;
     if (0 != create_descriptor_pool(init, render_data)) return -1;
     if (0 != create_skybox_descriptor_set_layout(init, render_data)) return -1;
     if (0 != create_spheres_descriptor_set_layout(init, render_data)) return -1;
@@ -2537,6 +2686,9 @@ int main() {
     if (0 != load_prefilter_environment_cubemap(init, render_data, "data/prefilterEnvMaps/")) return -1;
     if (0 != load_environment_brdf_map(init, render_data, "data/envBrdf.hdr")) return -1;
     if (0 != create_dummy_img(init, render_data)) return -1;
+    if (0 != load_gltf_data(init, render_data, "data/DamagedHelmet/glTF/DamagedHelmet.gltf")) return -1;
+    if (0 != create_vertex_buffer(init, render_data)) return -1;
+    if (0 != create_index_buffer(init, render_data)) return -1;
 
     while (!glfwWindowShouldClose(init.window)) {
         glfwPollEvents();

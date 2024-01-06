@@ -59,3 +59,11 @@ add_custom_command(
         DEPENDS ${OZZ_DATA_FILE}
         VERBATIM
 )
+
+add_custom_command(
+        TARGET ${APP_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/data/"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different  ${CMAKE_CURRENT_SOURCE_DIR}/data "${CMAKE_CURRENT_BINARY_DIR}/data/"
+        DEPENDS ${OZZ_DATA_FILE}
+        VERBATIM
+)

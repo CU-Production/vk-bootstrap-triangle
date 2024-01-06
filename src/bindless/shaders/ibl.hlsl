@@ -1,7 +1,9 @@
 struct VSInput
 {
     float3 vPosition : POSITION;
-    float3 vNormal : NORMAL;
+    float3 vNormal   : NORMAL;
+    float4 vTangent  : TANGENT;
+    float2 vUV       : TEXCOORD;
 };
 
 struct VSOutput
@@ -9,7 +11,9 @@ struct VSOutput
     float4 Pos : SV_POSITION;
     float4 WorldPos : POSITION0;
     float4 Normal : NORMAL0;
-    nointerpolation float2 Params : TEXCOORD0; // [Metalic, roughness].
+    float4 Tangent : TANGENT0;
+    float2 UV : TEXCOORD0;
+    nointerpolation float2 Params : TEXCOORD1; // [Metalic, roughness].
 };
 
 struct PushData
@@ -30,24 +34,6 @@ struct PushData
 [[vk::push_constant]]
 PushData pushData;
 
-static const float3 g_sphereWorldPos[15] = {
-    float3(15.0,   2.5, -8.0),
-    float3(15.0,   2.5, -8.0 + 1.0 * (16.0 / 6.0)),
-    float3(15.0,   2.5, -8.0 + 2.0 * (16.0 / 6.0)),
-    float3(15.0,   2.5, -8.0 + 3.0 * (16.0 / 6.0)),
-    float3(15.0,   2.5, -8.0 + 4.0 * (16.0 / 6.0)),
-    float3(15.0,   2.5, -8.0 + 5.0 * (16.0 / 6.0)),
-    float3(15.0,   2.5, -8.0 + 6.0 * (16.0 / 6.0)),
-    float3(15.0,  -2.5, -8.0),
-    float3(15.0,  -2.5, -8.0 + 1.0 * (16.0 / 6.0)),
-    float3(15.0,  -2.5, -8.0 + 2.0 * (16.0 / 6.0)),
-    float3(15.0,  -2.5, -8.0 + 3.0 * (16.0 / 6.0)),
-    float3(15.0,  -2.5, -8.0 + 4.0 * (16.0 / 6.0)),
-    float3(15.0,  -2.5, -8.0 + 5.0 * (16.0 / 6.0)),
-    float3(15.0,  -2.5, -8.0 + 6.0 * (16.0 / 6.0)),
-    float3(15.0,     0,  0)
-};
-
 float4x4 PosToModelMat(float3 pos)
 {
     // NOTE: HLSL's matrices are column major.
@@ -62,36 +48,24 @@ float4x4 PosToModelMat(float3 pos)
 }
 
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_VERTEX
-VSOutput mainVS(
-    VSInput vertInput,
-    uint instId : SV_InstanceID)
+VSOutput mainVS(VSInput vertInput)
 {
     VSOutput output = (VSOutput)0;
 
-    float4x4 modelMat = PosToModelMat(g_sphereWorldPos[instId]);
+    float4x4 modelMat = PosToModelMat(float3(3.0, 0, 0));
 
     float4 worldPos = mul(modelMat, float4(vertInput.vPosition, 1.0));
     float4 worldNormal = mul(modelMat, float4(vertInput.vNormal, 0.0));
+    float4 worldTangent = mul(modelMat, vertInput.vTangent);
 
     output.WorldPos = worldPos;
     output.Normal.xyz = normalize(worldNormal.xyz);
     output.Pos = mul(pushData.mvp_matrix, worldPos);
+    output.Tangent = worldTangent;
+    output.UV = vertInput.vUV;
 
-    float roughnessOffset = 1.0 / 7.0;
-    int instIdRemap = instId % 7;
 
-    output.Params.x = 1.0;
-    if(instId >= 7)
-    {
-        output.Params.x = 0.0;
-    }
-
-    output.Params.y = min(instIdRemap * roughnessOffset + 0.05, 1.0);
-
-    if (instId == 14)
-    {
-        output.Params.xy = pushData.cumtom_param.xy;
-    }
+    output.Params.xy = pushData.cumtom_param.xy;
 
     return output;
 }
