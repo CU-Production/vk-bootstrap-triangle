@@ -93,3 +93,38 @@ float computeSpecOcclusion(float NdotV, float AO, float roughness)
 {
     return saturate(pow(abs(NdotV + AO), exp2(-16.0f * roughness - 1.0f)) - 1.0f + AO);
 }
+
+float ApplySRGBCurve( float x )
+{
+    // Approximately pow(x, 1.0 / 2.2)
+    return x < 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+
+float RemoveSRGBCurve( float x )
+{
+    // Approximately pow(x, 2.2)
+    return x < 0.04045 ? x / 12.92 : pow( (x + 0.055) / 1.055, 2.4 );
+}
+
+float ApplySRGBCurve_Fast( float x )
+{
+    return x < 0.0031308 ? 12.92 * x : 1.13005 * sqrt(x - 0.00228) - 0.13448 * x + 0.005719;
+}
+
+float RemoveSRGBCurve_Fast( float x )
+{
+    return x < 0.04045 ? x / 12.92 : -7.43605 * x - 31.24297 * sqrt(-0.53792 * x + 1.279924) + 35.34864;
+}
+
+// Uncharted 2 Tonemapper
+float3 tonemap_uncharted2(float3 x)
+{
+    float A = 0.15;
+    float B = 0.50;
+    float C = 0.10;
+    float D = 0.20;
+    float E = 0.02;
+    float F = 0.30;
+
+    return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;
+}

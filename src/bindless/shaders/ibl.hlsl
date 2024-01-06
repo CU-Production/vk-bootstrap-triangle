@@ -18,55 +18,39 @@ struct VSOutput
 struct PushData
 {
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_VERTEX
-	float4x4 mvp_matrix;
-    float4 cumtom_param;
+	float4x4 m_matrix;
+    float4x4 vp_matrix;
 #elif __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
-    [[vk::offset(80)]]
+    [[vk::offset(128)]]
     uint4  texIdx;
     uint4  gltfTexIdx;
     float4 lightPositions[4];
 	float4 cameraPosition;
-    float4 albedo_maxPreFilterMips;
-    uint4  params; // x: enable light, y: enable ibl diffuse, z: enable ibl diffuse specular
+    uint4  params; // x: enable light, y: enable ibl diffuse, z: enable ibl diffuse specular, w: mips
 #endif
 };
 
 [[vk::push_constant]]
 PushData pushData;
 
-float4x4 PosToModelMat(float3 pos)
-{
-    // NOTE: HLSL's matrices are column major.
-    // But, it is filled column by column in this way. So it's good.
-    // As for the UBO mat input, we still need to transpose the row-major matrix.
-    float4x4 mat = { float4(1.0, 0.0, 0.0, pos.x),
-                     float4(0.0, 1.0, 0.0, pos.y),
-                     float4(0.0, 0.0, 1.0, pos.z),
-                     float4(0.0, 0.0, 0.0, 1.0) };
-                     
-    return mat;
-}
-
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_VERTEX
 VSOutput mainVS(VSInput vertInput)
 {
     VSOutput output = (VSOutput)0;
 
-    float4x4 modelMat = PosToModelMat(float3(3.0, 0, 0));
+    const float4x4 modelMat = pushData.m_matrix;
 
-    float4 worldPos = mul(modelMat, float4(vertInput.vPosition, 1.0));
-    float4 worldNormal = mul(modelMat, float4(vertInput.vNormal, 0.0));
-    float4 worldTangent = mul(modelMat, vertInput.vTangent);
-
-    output.WorldPos = worldPos;
-    output.Normal.xyz = normalize(worldNormal.xyz);
-    output.Pos = mul(pushData.mvp_matrix, worldPos);
-    output.Tangent = worldTangent;
+    output.WorldPos = mul(modelMat, float4(vertInput.vPosition, 1.0));
+    output.Pos = mul(pushData.vp_matrix, output.WorldPos);
+    output.Normal = mul(modelMat, float4(vertInput.vNormal, 0.0));
+    output.Tangent = mul(modelMat, float4(vertInput.vTangent.xyzw));
     output.UV = vertInput.vUV;
 
     return output;
 }
 #endif
+
+
 
 #if __SHADER_TARGET_STAGE == __SHADER_STAGE_PIXEL
 #include "GGXModel.hlsli"
@@ -91,14 +75,14 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
     const float ao = amr.x;
     const float metallic = amr.z;
 	const float roughness = amr.y;
-    const float maxMipLevel = pushData.albedo_maxPreFilterMips.w;
+    const float maxMipLevel = float(pushData.params.w);
     const float3 emissive = i_2dtextures[NonUniformResourceIndex(pushData.gltfTexIdx.w)].Sample(i_2dsamplerState, uv).xyz;
 
 	float3 V = normalize(pushData.cameraPosition.xyz - fragInput.WorldPos.xyz);
     float3 N = normalize(fragInput.Normal.xyz);
     float3 R = reflect(-V, N);
 
-    float3 tangent = normalize(fragInput.Tangent.xyz);
+    float3 tangent = normalize(fragInput.Tangent.xyz * fragInput.Tangent.w);
     float3 biTangent = normalize(cross(N, tangent));
 
     float3 normalSampled = i_2dtextures[NonUniformResourceIndex(pushData.gltfTexIdx.z)].Sample(i_2dsamplerState, uv).xyz;
@@ -173,19 +157,19 @@ float4 mainPS(VSOutput fragInput) : SV_TARGET
 
         float3 specular = prefilterEnv * (Ks * envBrdf.x + envBrdf.y);
 
-        // IBLo += specular * computeSpecOcclusion(max(dot(N, V), 0.0), ao, roughness);
-        IBLo += specular * ao;
+        IBLo += specular * computeSpecOcclusion(max(dot(N, V), 0.0), ao, roughness);
     }
 
-    float3 color = IBLo + Lo + emissive;
+    float3 color = IBLo + Lo + emissive * ao;
 	
     // HDR tonemapping
-    color = color / (color + (2.0).xxx);
+    // color = color / (color + (1.5).xxx);
 
     // Gamma Correction
-    color = pow(color, (1.0/2.2).xxx);
+    color = pow(color, 1.0 / 2.2);
 
 	return float4(color, 1.0);
     // return float4(emissive + Albedo, 1.0);
+    // return float4(normalSampled, 1.0);
 }
 #endif

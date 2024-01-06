@@ -41,17 +41,16 @@ struct Vertex {
     HMM_Vec2 uv;
 };
 
-struct SpheresVertexShaderPushConstants {
+struct GltfVertexShaderPushConstants {
+    HMM_Mat4 m_matrix;
     HMM_Mat4 vp_matrix;
-    HMM_Vec4 cumtom_param;
 };
 
-struct SpheresPixelShaderPushConstants {
+struct GltfPixelShaderPushConstants {
     uint32_t texIdx[4];
     uint32_t gltfIdx[4];
     HMM_Vec4 lightPositions[4];
     HMM_Vec4 cameraPosition;
-    HMM_Vec4 albedo_maxPreFilterMips;
     uint32_t params[4];
 };
 
@@ -115,9 +114,6 @@ struct RenderData {
 
     struct {
         ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-        float custom_metallic = 0.0f;
-        float custom_roughness = 0.0f;
-        HMM_Vec4 albedo = {1.00f, 0.71f, 0.09f, 1.00f}; // Gold
         bool enable_light = false;
         bool enable_ibl_diffuse = true;
         bool enable_ibl_specular = true;
@@ -699,12 +695,12 @@ int create_spheres_graphics_pipeline(Init& init, RenderData& data) {
 
     VkPushConstantRange vs_push_constant_range;
     vs_push_constant_range.offset = 0;
-    vs_push_constant_range.size = sizeof(SpheresVertexShaderPushConstants);
+    vs_push_constant_range.size = sizeof(GltfVertexShaderPushConstants);
     vs_push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
     VkPushConstantRange ps_push_constant_range;
-    ps_push_constant_range.offset = sizeof(SpheresVertexShaderPushConstants);
-    ps_push_constant_range.size = sizeof(SpheresPixelShaderPushConstants);
+    ps_push_constant_range.offset = sizeof(GltfVertexShaderPushConstants);
+    ps_push_constant_range.size = sizeof(GltfPixelShaderPushConstants);
     ps_push_constant_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     std::array<VkPushConstantRange, 2> push_constant_ranges = {vs_push_constant_range, ps_push_constant_range};
@@ -3066,9 +3062,9 @@ int draw_frame(Init& init, RenderData& data) {
             init.disp.cmdEndDebugUtilsLabelEXT(data.command_buffers[i]);
         }
 
-        // spheres pass
+        // gltf pass
         {
-            debug_utils_label.pLabelName = "spheres pass";
+            debug_utils_label.pLabelName = "gltf pass";
             init.disp.cmdBeginDebugUtilsLabelEXT(data.command_buffers[i], &debug_utils_label);
 
             VkRenderingAttachmentInfo color_attachment_info{};
@@ -3110,26 +3106,25 @@ int draw_frame(Init& init, RenderData& data) {
             float aspect = 1700.f / 900.f;
             HMM_Mat4 projection = HMM_Perspective_RH_NO(fov * HMM_DegToRad, aspect, 0.1f, 200.0f);
             projection[1][1] *= -1;
-            HMM_Mat4 mesh_matrix = projection * view;
+            HMM_Mat4 model_matrix = HMM_Translate({3, 0, 0}) * HMM_Rotate_RH(data.number_of_frame * 0.3f * HMM_DegToRad, HMM_V3(0, 1, 0)) * HMM_Rotate_RH(90.0f * HMM_DegToRad, HMM_V3(1, 0, 0));
+            HMM_Mat4 vp_matrix = projection * view;
 
-            SpheresVertexShaderPushConstants vs_constants{};
-            vs_constants.vp_matrix = mesh_matrix;
-            vs_constants.cumtom_param.X = data.imgui_state.custom_metallic;
-            vs_constants.cumtom_param.Y = data.imgui_state.custom_roughness;
+            GltfVertexShaderPushConstants vs_constants{};
+            vs_constants.m_matrix = model_matrix;
+            vs_constants.vp_matrix = vp_matrix;
 
-            init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SpheresVertexShaderPushConstants), &vs_constants);
+            init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GltfVertexShaderPushConstants), &vs_constants);
 
-            SpheresPixelShaderPushConstants ps_constants{};
+            GltfPixelShaderPushConstants ps_constants{};
             ps_constants.lightPositions[0] = {10.f,  3.f, -8.f, 0.0f,};
             ps_constants.lightPositions[1] = {10.f,  3.f,  8.f, 0.0f,};
             ps_constants.lightPositions[2] = {10.f, -3.f, -8.f, 0.0f,};
             ps_constants.lightPositions[3] = {10.f, -3.f,  8.f, 0.0f,};
             ps_constants.cameraPosition = {cam_pos.X, cam_pos.Y, cam_pos.Z, 0.0f,};
-            ps_constants.albedo_maxPreFilterMips = data.imgui_state.albedo;
-            ps_constants.albedo_maxPreFilterMips.W = 8 - 1; // mip_count = 8, max mip level is 7
             ps_constants.params[0] = data.imgui_state.enable_light ? 1 : 0;
             ps_constants.params[1] = data.imgui_state.enable_ibl_diffuse ? 1 : 0;
             ps_constants.params[2] = data.imgui_state.enable_ibl_specular ? 1 : 0;
+            ps_constants.params[3] = 8 - 1; // mip_count = 8, max mip level is 7
             ps_constants.texIdx[0] = 10;
             ps_constants.texIdx[1] = 11;
             ps_constants.texIdx[2] = 12;
@@ -3139,7 +3134,7 @@ int draw_frame(Init& init, RenderData& data) {
             ps_constants.gltfIdx[2] = 22;
             ps_constants.gltfIdx[3] = 23;
 
-            init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SpheresVertexShaderPushConstants), sizeof(SpheresPixelShaderPushConstants), &ps_constants);
+            init.disp.cmdPushConstants(data.command_buffers[i], data.spheres_pipeline.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(GltfVertexShaderPushConstants), sizeof(GltfPixelShaderPushConstants), &ps_constants);
 
             init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.spheres_pipeline.pipeline_layout, 0, 1, &bindless_write_descriptor_set);
 
@@ -3162,9 +3157,6 @@ int draw_frame(Init& init, RenderData& data) {
             ImGui::SetNextWindowBgAlpha(0.35f);
             if (ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::ColorEdit3("clear color", (float*)&data.imgui_state.clear_color);
-                ImGui::SliderFloat("metallic", &data.imgui_state.custom_metallic, 0.0f, 1.0f);
-                ImGui::SliderFloat("roughness", &data.imgui_state.custom_roughness, 0.0f, 1.0f);
-                ImGui::ColorEdit3("albedo", (float*)&data.imgui_state.albedo);
                 ImGui::Checkbox("enable light", &data.imgui_state.enable_light);
                 ImGui::Checkbox("enable ibl diffuse", &data.imgui_state.enable_ibl_diffuse);
                 ImGui::Checkbox("enable ibl specular", &data.imgui_state.enable_ibl_specular);

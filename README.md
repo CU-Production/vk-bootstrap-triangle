@@ -77,4 +77,10 @@ void main ()
 }
 ```
 
+## 9. gltf + bindless (descriptor indexing)
 
+![gltf](screenshots/Snipaste_2024-01-06_17-24-56.png)
+
+![gltfrdc](screenshots/Snipaste_2024-01-06_17-26-05.png)
+
+> push descriptor only supporting up to 32 descriptors
