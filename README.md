@@ -79,7 +79,7 @@ void main ()
 
 ## 9. gltf + bindless (descriptor indexing)
 
-![gltf](screenshots/Snipaste_2024-01-06_17-24-56.png)
+![gltf](screenshots/Snipaste_2024-01-08_22-47-55.png)
 
 ![gltfrdc](screenshots/Snipaste_2024-01-06_17-26-05.png)
 

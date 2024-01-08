@@ -3062,6 +3062,16 @@ int draw_frame(Init& init, RenderData& data) {
             init.disp.cmdEndDebugUtilsLabelEXT(data.command_buffers[i]);
         }
 
+
+
+
+
+
+
+
+
+
+
         // gltf pass
         {
             debug_utils_label.pLabelName = "gltf pass";
