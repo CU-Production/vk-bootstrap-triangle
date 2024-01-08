@@ -37,3 +37,7 @@ target_include_directories(tinyobjloader INTERFACE TinyObj)
 ## stb
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE stb)
+
+## thsvs
+add_library(thsvs INTERFACE)
+target_include_directories(thsvs INTERFACE thsvs)

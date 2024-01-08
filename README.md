@@ -84,3 +84,7 @@ void main ()
 ![gltfrdc](screenshots/Snipaste_2024-01-06_17-26-05.png)
 
 > push descriptor only supporting up to 32 descriptors
+
+## 10. timeline semaphore
+
+![timeline semaphore](screenshots/Snipaste_2024-01-08_21-47-17.png)
