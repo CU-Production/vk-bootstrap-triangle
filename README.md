@@ -88,3 +88,7 @@ void main ()
 ## 10. timeline semaphore
 
 ![timeline semaphore](screenshots/Snipaste_2024-01-08_21-47-17.png)
+
+## 11. no pipeline (VK_EXT_shader_object)
+
+> `VK_EXT_shader_object` is not supported by RenderDoc or Nsight
