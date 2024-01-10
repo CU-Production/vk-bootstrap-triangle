@@ -96,3 +96,15 @@ void main ()
 ## 12. compute shader
 
 ![cs](screenshots/Snipaste_2024-01-10_22-21-55.png)
+
+## 13. multi queue
+
+![one queue](screenshots/Snipaste_2024-01-10_22-56-29.png)
+
+> one queue
+
+![multi queue](screenshots/Snipaste_2024-01-10_22-57-28.png)
+
+> multi queue
+> 
+> use `queueWaitIdle(graphics_queue);` to simplify multi queue synchronous
