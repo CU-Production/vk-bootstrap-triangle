@@ -92,3 +92,7 @@ void main ()
 ## 11. no pipeline (VK_EXT_shader_object)
 
 > `VK_EXT_shader_object` is not supported by RenderDoc or Nsight
+
+## 12. compute shader
+
+![cs](screenshots/Snipaste_2024-01-10_22-21-55.png)
