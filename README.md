@@ -108,3 +108,9 @@ void main ()
 > multi queue
 > 
 > use `queueWaitIdle(graphics_queue);` to simplify multi queue synchronous
+
+## 14. async compute
+
+![async compute](screenshots/Snipaste_2024-01-11_00-02-39.png)
+
+> **Main pass** and **CS pass** overlap
