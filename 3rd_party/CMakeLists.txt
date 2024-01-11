@@ -41,3 +41,7 @@ target_include_directories(stb INTERFACE stb)
 ## thsvs
 add_library(thsvs INTERFACE)
 target_include_directories(thsvs INTERFACE thsvs)
+
+## renderdoc
+add_library(rdc INTERFACE)
+target_include_directories(rdc INTERFACE renderdoc_app)
