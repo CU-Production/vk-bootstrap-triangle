@@ -114,3 +114,7 @@ void main ()
 ![async compute](screenshots/Snipaste_2024-01-11_00-02-39.png)
 
 > **Main pass** and **CS pass** overlap
+
+## 15. headless
+
+Examples that run one-time tasks and don't make use of visual output (no window system integration).
