@@ -16,7 +16,8 @@ endif()
 
 set(GLSL_SOURCE_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ozz.frag
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ozz.vert)
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/ozz.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinning.comp)
 
 foreach(GLSL ${GLSL_SOURCE_FILES})
     get_filename_component(FILE_NAME ${GLSL} NAME)

@@ -1,0 +1,49 @@
+#version 460 core
+
+layout(push_constant) uniform constants
+{
+	uint vertexCount;
+} PushConstants;
+
+struct Vertex {
+	vec4 Position;
+	vec4 Normal;
+	ivec4 JointIndices;
+	vec4 JointWeights;
+};
+
+layout (std430, binding = 0) readonly buffer VertexBuffer{
+	Vertex ivertices[];
+};
+
+layout (std430, binding = 1) readonly buffer JointMatrices{
+	mat4 jointMat[];
+};
+
+layout (std430, binding = 2) writeonly buffer PoseBuffer{
+	Vertex overtices[];
+};
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+void main ()
+{
+	uint index = gl_GlobalInvocationID.x;
+
+	if (index < PushConstants.vertexCount) {
+		vec3  inPosition     = ivertices[index].Position.xyz;
+		vec3  inNormal       = ivertices[index].Normal.xyz;
+		ivec4 inJointIndices = ivertices[index].JointIndices;
+		vec4  inJointWeights = ivertices[index].JointWeights;
+
+		mat4 skinMat =
+			inJointWeights.x * jointMat[int(inJointIndices.x)] +
+			inJointWeights.y * jointMat[int(inJointIndices.y)] +
+			inJointWeights.z * jointMat[int(inJointIndices.z)] +
+			inJointWeights.w * jointMat[int(inJointIndices.w)];
+
+		overtices[index].Position = skinMat * vec4(inPosition, 1.0);
+		overtices[index].Normal = ivertices[index].Normal;
+		overtices[index].JointIndices = ivertices[index].JointIndices;
+		overtices[index].JointWeights = ivertices[index].JointWeights;
+	}
+}

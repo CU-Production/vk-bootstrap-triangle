@@ -59,6 +59,10 @@ struct VertexShaderPushConstants {
     HMM_Mat4 mvp_matrix;
 };
 
+struct ComputeShaderPushConstants {
+    uint32_t vertexCount;
+};
+
 struct Init {
     GLFWwindow* window;
     vkb::Instance instance;
@@ -85,6 +89,11 @@ struct RenderData {
 
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
+    VkDescriptorSetLayout descriptor_set_layout;
+
+    VkPipelineLayout compute_pipeline_layout;
+    VkPipeline compute_pipeline;
+    VkDescriptorSetLayout compute_descriptor_set_layout;
 
     VkCommandPool command_pool;
     std::vector<VkCommandBuffer> command_buffers;
@@ -104,13 +113,17 @@ struct RenderData {
     VmaAllocation index_buffer_allocation;
     VkDescriptorBufferInfo index_buffer_descriptor_buffer_info;
 
+    VkBuffer pose_buffer;
+    VmaAllocation pose_buffer_allocation;
+    VkDescriptorBufferInfo pose_buffer_descriptor_buffer_info;
+    uint32_t pose_buffer_size;
+
     VkDescriptorPool descriptor_pool;
 
     VkBuffer shader_storage_buffer;
     VmaAllocation shader_storage_buffer_allocation;
     VkDescriptorBufferInfo shader_storage_buffer_descriptor_buffer_info;
 
-    VkDescriptorSetLayout descriptor_set_layout;
 
     std::unique_ptr<ozz_t> ozz;
     struct {
@@ -496,6 +509,81 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
     return 0;
 }
 
+int create_compute_descriptor_set_layout(Init& init, RenderData& data) {
+    std::array<VkDescriptorSetLayoutBinding, 3> layout_binding{};
+    layout_binding[0].binding = 0;
+    layout_binding[0].descriptorCount = 1;
+    layout_binding[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    layout_binding[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    layout_binding[1].binding = 1;
+    layout_binding[1].descriptorCount = 1;
+    layout_binding[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    layout_binding[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    layout_binding[2].binding = 2;
+    layout_binding[2].descriptorCount = 1;
+    layout_binding[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    layout_binding[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    layout_info.bindingCount = layout_binding.size();
+    layout_info.pBindings = layout_binding.data();
+
+    if (init.disp.createDescriptorSetLayout(&layout_info, nullptr, &data.compute_descriptor_set_layout) != VK_SUCCESS) {
+        std::cout <<"failed to create skybox descriptor set layout!\n";
+        return -1;
+    }
+    return 0;
+}
+
+int create_compute_pipeline(Init& init, RenderData& data) {
+    auto cs_code = readFile("shaders/skinning.comp.spv");
+
+    VkShaderModule comp_module = createShaderModule(init, cs_code);
+    if (comp_module == VK_NULL_HANDLE) {
+        std::cout << "failed to create shader module\n";
+        return -1; // failed to create shader modules
+    }
+
+    VkPipelineShaderStageCreateInfo cs_stage_info = {};
+    cs_stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cs_stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cs_stage_info.module = comp_module;
+    cs_stage_info.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shader_stages[] = { cs_stage_info };
+
+    VkPushConstantRange cs_push_constant_range;
+    cs_push_constant_range.offset = 0;
+    cs_push_constant_range.size = sizeof(ComputeShaderPushConstants);
+    cs_push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &data.compute_descriptor_set_layout;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &cs_push_constant_range;
+
+    if (init.disp.createPipelineLayout(&pipeline_layout_info, nullptr, &data.compute_pipeline_layout) != VK_SUCCESS) {
+        std::cout << "failed to create pipeline layout\n";
+        return -1; // failed to create pipeline layout
+    }
+
+    VkComputePipelineCreateInfo pipeline_info = {};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeline_info.layout = data.compute_pipeline_layout;
+    pipeline_info.stage = cs_stage_info;
+    if (init.disp.createComputePipelines(VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &data.compute_pipeline) != VK_SUCCESS) {
+        std::cout << "failed to create pipline\n";
+        return -1; // failed to create compute pipeline
+    }
+
+    init.disp.destroyShaderModule(comp_module, nullptr);
+    return 0;
+}
+
 int create_command_pool(Init& init, RenderData& data) {
     VkCommandPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -828,6 +916,106 @@ int create_index_buffer(Init& init, RenderData& data) {
     return 0;
 }
 
+int create_pose_buffer(Init& init, RenderData& data) {
+    const uint32_t buffer_size = sizeof(data.vertices[0]) * data.vertices.size();
+    data.pose_buffer_size = buffer_size;
+
+    /* vertex buffer */
+    VkBufferCreateInfo vertex_buffer_info{};
+    vertex_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    vertex_buffer_info.size = buffer_size;
+    vertex_buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    vertex_buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo vertex_buffer_alloc_info = {};
+    vertex_buffer_alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+    if (vmaCreateBuffer(init.allocator, &vertex_buffer_info, &vertex_buffer_alloc_info, &data.pose_buffer, &data.pose_buffer_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create vertex buffer\n";
+        return -1; // failed to create vertex buffer
+    }
+
+    /* staging buffer for copy */
+    VkBuffer vertex_buffer_staging_buffer;
+    VmaAllocation vertex_buffer_staging_buffer_allocation;
+
+    VkBufferCreateInfo staging_buffer_alloc_info{};
+    staging_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    staging_buffer_alloc_info.size = buffer_size;;
+    staging_buffer_alloc_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+    VmaAllocationCreateInfo staging_alloc_info{};
+    staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+    if (vmaCreateBuffer(init.allocator, &staging_buffer_alloc_info, &staging_alloc_info, &vertex_buffer_staging_buffer, &vertex_buffer_staging_buffer_allocation, nullptr) != VK_SUCCESS) {
+        std::cout << "failed to create vertex buffer\n";
+        return -1; // failed to create vertex buffer
+    }
+
+    /* copy data to staging buffer*/
+    void* mapped_data;
+    vmaMapMemory(init.allocator, vertex_buffer_staging_buffer_allocation, &mapped_data);
+    memcpy(mapped_data, data.vertices.data(), vertex_buffer_info.size);
+    vmaUnmapMemory(init.allocator, vertex_buffer_staging_buffer_allocation);
+
+    VkCommandBufferAllocateInfo cmdbuffer_alloc_info{};
+    cmdbuffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdbuffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdbuffer_alloc_info.commandPool = data.command_pool;
+    cmdbuffer_alloc_info.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    init.disp.allocateCommandBuffers(&cmdbuffer_alloc_info, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    init.disp.beginCommandBuffer(commandBuffer, &beginInfo);
+
+    VkBufferCopy copyRegion{};
+    copyRegion.srcOffset = 0; // Optional
+    copyRegion.dstOffset = 0; // Optional
+    copyRegion.size = buffer_size;
+    init.disp.cmdCopyBuffer(commandBuffer, vertex_buffer_staging_buffer, data.pose_buffer, 1, &copyRegion);
+
+    VkBufferMemoryBarrier undefToShaderReadBarrier{};
+    undefToShaderReadBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    undefToShaderReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    undefToShaderReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    undefToShaderReadBarrier.buffer = data.pose_buffer;
+    undefToShaderReadBarrier.offset = 0;
+    undefToShaderReadBarrier.size = buffer_size;
+
+    init.disp.cmdPipelineBarrier(commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0,
+            0, nullptr,
+            1, &undefToShaderReadBarrier,
+            0, nullptr);
+
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &commandBuffer;
+
+    init.disp.endCommandBuffer(commandBuffer);
+
+    init.disp.queueSubmit(data.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+    init.disp.queueWaitIdle(data.graphics_queue);
+
+    init.disp.freeCommandBuffers(data.command_pool, 1, &commandBuffer);
+
+    vmaDestroyBuffer(init.allocator, vertex_buffer_staging_buffer, vertex_buffer_staging_buffer_allocation);
+
+    data.pose_buffer_descriptor_buffer_info.buffer = data.pose_buffer;
+    data.pose_buffer_descriptor_buffer_info.offset = 0;
+    data.pose_buffer_descriptor_buffer_info.range = buffer_size;
+
+    return 0;
+}
+
 int create_descriptor_pool(Init& init, RenderData& data) {
     std::array<VkDescriptorPoolSize, 2> pool_size{};
     pool_size[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -931,7 +1119,7 @@ int create_ssbo(Init& init, RenderData& data) {
 }
 
 int create_descriptor_set_layout(Init& init, RenderData& data) {
-    std::array<VkDescriptorSetLayoutBinding, 3> layout_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 2> layout_bindings{};
     layout_bindings[0].binding = 0;
     layout_bindings[0].descriptorCount = 1;
     layout_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -940,10 +1128,6 @@ int create_descriptor_set_layout(Init& init, RenderData& data) {
     layout_bindings[1].descriptorCount = 1;
     layout_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     layout_bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    layout_bindings[2].binding = 2;
-    layout_bindings[2].descriptorCount = 1;
-    layout_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    layout_bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1036,6 +1220,85 @@ int draw_frame(Init& init, RenderData& data) {
 
         if (init.disp.beginCommandBuffer(data.command_buffers[i], &begin_info) != VK_SUCCESS) {
             return -1; // failed to begin recording command buffer
+        }
+
+        // cs pass
+        {
+            VkDebugUtilsLabelEXT debug_utils_label{};
+            debug_utils_label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+            debug_utils_label.pLabelName = "CS pass";
+            debug_utils_label.color[0] = 0.7f;
+            debug_utils_label.color[1] = 0.0f;
+            debug_utils_label.color[2] = 0.3f;
+            debug_utils_label.color[3] = 1.0f;
+
+            init.disp.cmdBeginDebugUtilsLabelEXT(data.command_buffers[i], &debug_utils_label);
+
+            VkBufferMemoryBarrier shaderReadToShaderWriteBarrier{};
+            shaderReadToShaderWriteBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            shaderReadToShaderWriteBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            shaderReadToShaderWriteBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            shaderReadToShaderWriteBarrier.buffer = data.pose_buffer;
+            shaderReadToShaderWriteBarrier.offset = 0;
+            shaderReadToShaderWriteBarrier.size = data.pose_buffer_size;
+
+            init.disp.cmdPipelineBarrier(data.command_buffers[i],
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    0,
+                    0, nullptr,
+                    1, &shaderReadToShaderWriteBarrier,
+                    0, nullptr);
+
+            init.disp.cmdBindPipeline(data.command_buffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, data.compute_pipeline);
+
+            ComputeShaderPushConstants csconstants{};
+            csconstants.vertexCount = data.vertices.size();
+
+            init.disp.cmdPushConstants(data.command_buffers[i], data.compute_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputeShaderPushConstants), &csconstants);
+
+            std::array<VkWriteDescriptorSet, 3> write_descriptor_sets{};
+            write_descriptor_sets[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write_descriptor_sets[0].dstBinding = 0;
+            write_descriptor_sets[0].dstArrayElement = 0;
+            write_descriptor_sets[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write_descriptor_sets[0].descriptorCount = 1;
+            write_descriptor_sets[0].pBufferInfo = &data.vertex_buffer_descriptor_buffer_info;
+            write_descriptor_sets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write_descriptor_sets[1].dstBinding = 1;
+            write_descriptor_sets[1].dstArrayElement = 0;
+            write_descriptor_sets[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write_descriptor_sets[1].descriptorCount = 1;
+            write_descriptor_sets[1].pBufferInfo = &data.shader_storage_buffer_descriptor_buffer_info;
+            write_descriptor_sets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write_descriptor_sets[2].dstBinding = 2;
+            write_descriptor_sets[2].dstArrayElement = 0;
+            write_descriptor_sets[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write_descriptor_sets[2].descriptorCount = 1;
+            write_descriptor_sets[2].pBufferInfo = &data.pose_buffer_descriptor_buffer_info;
+            init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_COMPUTE, data.compute_pipeline_layout, 0, write_descriptor_sets.size(), write_descriptor_sets.data());
+
+            uint32_t groupX = std::ceil((float)csconstants.vertexCount / 64.0f);
+            init.disp.cmdDispatch(data.command_buffers[i], groupX, 1, 1);
+
+
+            VkBufferMemoryBarrier shaderWriteToShaderReadBarrier{};
+            shaderWriteToShaderReadBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            shaderWriteToShaderReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            shaderWriteToShaderReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            shaderWriteToShaderReadBarrier.buffer = data.pose_buffer;
+            shaderWriteToShaderReadBarrier.offset = 0;
+            shaderWriteToShaderReadBarrier.size = data.pose_buffer_size;
+
+            init.disp.cmdPipelineBarrier(data.command_buffers[i],
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    0,
+                    0, nullptr,
+                    1, &shaderWriteToShaderReadBarrier,
+                    0, nullptr);
+
+            init.disp.cmdEndDebugUtilsLabelEXT(data.command_buffers[i]);
         }
 
         // Begin frame
@@ -1151,26 +1414,20 @@ int draw_frame(Init& init, RenderData& data) {
         memcpy(mapped_data, data.ozz->joint_matrices.data(), buffer_size);
         vmaUnmapMemory(init.allocator, data.shader_storage_buffer_allocation);
 
-        std::array<VkWriteDescriptorSet, 3> write_descriptor_sets{};
+        std::array<VkWriteDescriptorSet, 2> write_descriptor_sets{};
         write_descriptor_sets[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write_descriptor_sets[0].dstBinding = 0;
         write_descriptor_sets[0].dstArrayElement = 0;
         write_descriptor_sets[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         write_descriptor_sets[0].descriptorCount = 1;
-        write_descriptor_sets[0].pBufferInfo = &data.vertex_buffer_descriptor_buffer_info;
+        write_descriptor_sets[0].pBufferInfo = &data.pose_buffer_descriptor_buffer_info;
         write_descriptor_sets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write_descriptor_sets[1].dstBinding = 1;
         write_descriptor_sets[1].dstArrayElement = 0;
         write_descriptor_sets[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         write_descriptor_sets[1].descriptorCount = 1;
         write_descriptor_sets[1].pBufferInfo = &data.index_buffer_descriptor_buffer_info;
-        write_descriptor_sets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write_descriptor_sets[2].dstBinding = 2;
-        write_descriptor_sets[2].dstArrayElement = 0;
-        write_descriptor_sets[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write_descriptor_sets[2].descriptorCount = 1;
-        write_descriptor_sets[2].pBufferInfo = &data.shader_storage_buffer_descriptor_buffer_info;
-        init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.pipeline_layout, 0, 3, write_descriptor_sets.data());
+        init.disp.cmdPushDescriptorSetKHR(data.command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, data.pipeline_layout, 0, write_descriptor_sets.size(), write_descriptor_sets.data());
 
         init.disp.cmdDraw(data.command_buffers[i], data.indices.size(), 1, 0, 0);
 
@@ -1330,8 +1587,11 @@ void cleanup(Init& init, RenderData& data) {
     ImGui::DestroyContext();
 
     init.disp.destroyDescriptorSetLayout(data.descriptor_set_layout, nullptr);
+    init.disp.destroyDescriptorSetLayout(data.compute_descriptor_set_layout, nullptr);
 
     init.disp.destroyDescriptorPool(data.descriptor_pool, nullptr);
+
+    vmaDestroyBuffer(init.allocator, data.pose_buffer, data.pose_buffer_allocation);
 
     vmaDestroyBuffer(init.allocator, data.shader_storage_buffer, data.shader_storage_buffer_allocation);
 
@@ -1349,6 +1609,9 @@ void cleanup(Init& init, RenderData& data) {
 
     init.disp.destroyPipeline(data.graphics_pipeline, nullptr);
     init.disp.destroyPipelineLayout(data.pipeline_layout, nullptr);
+
+    init.disp.destroyPipeline(data.compute_pipeline, nullptr);
+    init.disp.destroyPipelineLayout(data.compute_pipeline_layout, nullptr);
 
     init.swapchain.destroy_image_views(data.swapchain_image_views);
 
@@ -1383,10 +1646,13 @@ int main() {
     if (0 != create_command_pool(init, render_data)) return -1;
     if (0 != create_vertex_buffer(init, render_data)) return -1;
     if (0 != create_index_buffer(init, render_data)) return -1;
+    if (0 != create_pose_buffer(init, render_data)) return -1;
     if (0 != create_ssbo(init, render_data)) return -1;
     if (0 != create_descriptor_pool(init, render_data)) return -1;
     if (0 != create_descriptor_set_layout(init, render_data)) return -1;
     if (0 != create_graphics_pipeline(init, render_data)) return -1;
+    if (0 != create_compute_descriptor_set_layout(init, render_data)) return -1;
+    if (0 != create_compute_pipeline(init, render_data)) return -1;
     if (0 != create_command_buffers(init, render_data)) return -1;
     if (0 != create_sync_objects(init, render_data)) return -1;
     if (0 != imgui_initialization(init, render_data)) return -1;

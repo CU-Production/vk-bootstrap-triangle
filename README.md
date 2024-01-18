@@ -118,3 +118,5 @@ void main ()
 ## 15. headless
 
 Examples that run one-time tasks and don't make use of visual output (no window system integration).
+
+## 16. cs skinning
