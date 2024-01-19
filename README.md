@@ -120,3 +120,9 @@ void main ()
 Examples that run one-time tasks and don't make use of visual output (no window system integration).
 
 ## 16. cs skinning
+
+![VTF skinning](screenshots/Snipaste_2024-01-19_10-59-55.png)
+
+![CS skinning](screenshots/Snipaste_2024-01-19_11-06-13.png)
+
+> CS skinning total time is longer than vs skinning
