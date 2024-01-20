@@ -23,10 +23,11 @@ foreach(GLSL ${GLSL_SOURCE_FILES})
     set(SPIRV "${CMAKE_CURRENT_BINARY_DIR}/shaders/${FILE_NAME}.spv")
 #    message(${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV})
     add_custom_command(
-            TARGET ${APP_NAME} PRE_BUILD
+            OUTPUT ${SPIRV}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders/"
             COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
             DEPENDS ${GLSL}
             VERBATIM
     )
+    target_sources(${APP_NAME} PRIVATE ${SPIRV})
 endforeach(GLSL)

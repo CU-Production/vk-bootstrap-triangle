@@ -19,10 +19,11 @@ foreach(HLSL ${HLSL_SOURCE_FILES})
     get_filename_component(FILE_NAME ${HLSL} NAME)
     set(CS_SPIRV "${CMAKE_CURRENT_BINARY_DIR}/shaders/${FILE_NAME}.comp.spv")
     add_custom_command(
-            TARGET ${APP_NAME} PRE_BUILD
+            OUTPUT ${CS_SPIRV}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders/"
             COMMAND ${DXC_EXE} -spirv -T "cs_6_0" -E "mainCS" ${HLSL} -Fo ${CS_SPIRV}
             DEPENDS ${HLSL}
             VERBATIM
     )
+    target_sources(${APP_NAME} PRIVATE ${CS_SPIRV})
 endforeach(HLSL)

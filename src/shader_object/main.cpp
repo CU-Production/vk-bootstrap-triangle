@@ -620,6 +620,14 @@ int draw_frame(Init& init, RenderData& data) {
         scissor.offset = { 0, 0 };
         scissor.extent = init.swapchain.extent;
 
+        VkColorBlendEquationEXT color_blend_equation_ext{};
+        color_blend_equation_ext.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        color_blend_equation_ext.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        color_blend_equation_ext.colorBlendOp = VK_BLEND_OP_ADD;
+        color_blend_equation_ext.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        color_blend_equation_ext.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        color_blend_equation_ext.alphaBlendOp = VK_BLEND_OP_ADD;
+
         VkRenderingAttachmentInfo color_attachment_info{};
         color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachment_info.imageView = data.swapchain_image_views[i];
@@ -647,6 +655,7 @@ int draw_frame(Init& init, RenderData& data) {
         init.disp.cmdSetDepthCompareOp(data.command_buffers[i], VK_COMPARE_OP_LESS_OR_EQUAL);
         init.disp.cmdSetPrimitiveTopology(data.command_buffers[i], VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
         init.disp.cmdSetRasterizerDiscardEnable(data.command_buffers[i], VK_FALSE);
+        init.disp.cmdSetColorBlendEquationEXT(data.command_buffers[i], 0, 1, &color_blend_equation_ext);
         init.disp.cmdSetPolygonModeEXT(data.command_buffers[i], VK_POLYGON_MODE_FILL);
         init.disp.cmdSetRasterizationSamplesEXT(data.command_buffers[i], VK_SAMPLE_COUNT_1_BIT);
         init.disp.cmdSetAlphaToCoverageEnableEXT(data.command_buffers[i], VK_FALSE);
