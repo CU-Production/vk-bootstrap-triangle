@@ -126,3 +126,7 @@ Examples that run one-time tasks and don't make use of visual output (no window 
 ![CS skinning](screenshots/Snipaste_2024-01-19_11-06-13.png)
 
 > CS skinning total time is longer than vs skinning
+ 
+## 17. gears
+
+![gears](screenshots/Snipaste_2024-01-20_12-29-04.png)
